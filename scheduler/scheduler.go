@@ -97,7 +97,9 @@ type Rule struct {
 	Metadata map[string]interface{} `json:"metadata"`
 
 	// ID of the rule
-	ID int `json:"id"`
+	ID int `json:"-"`
+
+	// TODO add creation time, etc.
 
 	// used internally, used to stop a rule
 	stop chan struct{}
@@ -256,13 +258,31 @@ func main() {
 		fmt.Printf("%#v\n", rule)
 	}
 
-	rule.StartScheduling()
+	store, err := NewRuleStore("/tmp/store")
+	if err != nil {
+		panic(err)
+	}
 
-	time.Sleep(10 * time.Second)
+	//err = store.StoreRule(rule)
+	//fmt.Println("rule saved, id:", rule.ID)
 
-	fmt.Println("stopping the rule")
-	rule.StopScheduling()
-	fmt.Println("rule stopped")
+	rules, err := store.LoadRules()
+	fmt.Println("number of rules:", len(rules))
+	for _, rule := range rules {
+		fmt.Println("rule id:", rule.ID, "query:", rule.GraphiteTask.Query)
+		rule.StartScheduling()
+
+		time.Sleep(10 * time.Second)
+
+		fmt.Println("stopping the rule")
+		rule.StopScheduling()
+		fmt.Println("rule stopped")
+
+	}
+
+	if err = store.Close(); err != nil {
+		fmt.Println(err)
+	}
 
 	time.Sleep(10 * time.Second)
 }
