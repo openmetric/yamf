@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"github.com/HouzuoGuo/tiedot/db"
+	"github.com/HouzuoGuo/tiedot/dberr"
 )
 
 // RuleStore is underlying db that stores rules
@@ -32,7 +33,7 @@ func NewRuleStore(dbPath string) (*RuleStore, error) {
 
 // LoadRules fetches all rules from database
 func (store *RuleStore) LoadRules() ([]*Rule, error) {
-	var rules []*Rule
+	rules := make([]*Rule, 0)
 
 	store.col.ForEachDoc(func(id int, doc []byte) (moveOn bool) {
 		var rule *Rule
@@ -59,6 +60,9 @@ func (store *RuleStore) LoadRule(id int) (*Rule, error) {
 	var err error
 
 	if doc, err = store.col.Read(id); err != nil {
+		if dberr.Type(err) == dberr.ErrorNoDoc {
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -75,10 +79,10 @@ func (store *RuleStore) LoadRule(id int) (*Rule, error) {
 	return rule, nil
 }
 
-// StoreRule saves the rule to database
+// SaveRule saves the rule to database
 // If rule.ID is 0, the rule is inserted (created), otherwise, the rule is updated.
 // On insert, rule.ID will be set afterwards.
-func (store *RuleStore) StoreRule(rule *Rule) error {
+func (store *RuleStore) SaveRule(rule *Rule) error {
 	var err error
 	var id int
 	var docB []byte
@@ -108,6 +112,10 @@ func (store *RuleStore) StoreRule(rule *Rule) error {
 	}
 
 	return nil
+}
+
+func (store *RuleStore) DeleteRule(id int) error {
+	return store.col.Delete(id)
 }
 
 func (store *RuleStore) Close() error {

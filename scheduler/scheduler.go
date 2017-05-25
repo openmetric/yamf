@@ -97,7 +97,7 @@ type Rule struct {
 	Metadata map[string]interface{} `json:"metadata"`
 
 	// ID of the rule
-	ID int `json:"-"`
+	ID int `json:"id"`
 
 	// TODO add creation time, etc.
 
@@ -157,9 +157,12 @@ func NewRuleFromJSON(spec []byte) (*Rule, error) {
 	// check if all fields meets requirement
 
 	// ensure rule.ID is not set
-	if rule.ID != 0 {
-		return nil, errors.New("`id` must NOT be set")
-	}
+	//if rule.ID != 0 {
+	//return nil, errors.New("`id` must NOT be set")
+	//}
+
+	// reset ID to 0, it should be assigned elsewhere
+	rule.ID = 0
 
 	// ensure rule.Type is set
 	if rule.Type == "" {
@@ -230,59 +233,4 @@ func checkGraphiteTask(task *GraphiteTask) error {
 func PublishTask(task *Task) {
 	// TODO implement me
 	fmt.Printf("%#v\n", task)
-}
-
-func main() {
-	ruleSpec := []byte(`
-{
-	"type": "graphite",
-	"timeout": "2m",
-	"interval": "2s",
-	"metadata": { "rule-id": "test.check" },
-	"graphite_task": {
-		"query": "pm.*.agg.cpu.percent",
-		"from": "-5min",
-		"until": "now",
-		"meta_extract_pattern": "^$",
-		"critical_expr": "> -1.0",
-		"warning_expr": "> 0.8"
-	},
-
-	"dummy": "dummy"
-}
-`)
-	rule, err := NewRuleFromJSON(ruleSpec)
-	if err != nil {
-		fmt.Println(err)
-	} else {
-		fmt.Printf("%#v\n", rule)
-	}
-
-	store, err := NewRuleStore("/tmp/store")
-	if err != nil {
-		panic(err)
-	}
-
-	//err = store.StoreRule(rule)
-	//fmt.Println("rule saved, id:", rule.ID)
-
-	rules, err := store.LoadRules()
-	fmt.Println("number of rules:", len(rules))
-	for _, rule := range rules {
-		fmt.Println("rule id:", rule.ID, "query:", rule.GraphiteTask.Query)
-		rule.StartScheduling()
-
-		time.Sleep(10 * time.Second)
-
-		fmt.Println("stopping the rule")
-		rule.StopScheduling()
-		fmt.Println("rule stopped")
-
-	}
-
-	if err = store.Close(); err != nil {
-		fmt.Println(err)
-	}
-
-	time.Sleep(10 * time.Second)
 }
