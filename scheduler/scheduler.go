@@ -26,7 +26,7 @@ type worker struct {
 // Run the scheduler
 func Run(config *Config) {
 	publish := func(t *types.Task) {
-		fmt.Println("Publish Task:", t.RuleID)
+		fmt.Println("Publish Task:", t.RuleID, "metadata:", t.Metadata)
 	}
 
 	rdb, _ := types.NewRuleDB(config.DBPath)
@@ -46,7 +46,7 @@ type ruleScheduler struct {
 	stop chan struct{}
 }
 
-func (w *worker) scheduleRule(rule *types.Rule) {
+func (w *worker) startSchedule(rule *types.Rule) {
 	if rule.Paused {
 		return
 	}
@@ -66,7 +66,9 @@ func (w *worker) scheduleRule(rule *types.Rule) {
 			select {
 			case <-ticker.C:
 				task := &types.Task{
-					RuleID: s.ID,
+					RuleID:   s.ID,
+					Check:    s.Check,
+					Metadata: s.Metadata,
 				}
 				w.publish(task)
 			case <-s.stop:
@@ -82,7 +84,7 @@ func (w *worker) scheduleRule(rule *types.Rule) {
 	w.rules[s.ID] = &s
 }
 
-func (w *worker) stopRule(id int) {
+func (w *worker) stopSchedule(id int) {
 	if s, ok := w.rules[id]; ok {
 		if s.stop != nil {
 			close(s.stop)
@@ -93,13 +95,7 @@ func (w *worker) stopRule(id int) {
 	}
 }
 
-func (w *worker) updateRule(rule *types.Rule) {
-	if oldS, ok := w.rules[rule.ID]; ok {
-		if rule.Paused {
-			w.stopRule(rule.ID)
-		} else {
-			close(oldS.stop)
-			w.scheduleRule(rule)
-		}
-	}
+func (w *worker) updateSchedule(rule *types.Rule) {
+	w.stopSchedule(rule.ID)
+	w.startSchedule(rule)
 }

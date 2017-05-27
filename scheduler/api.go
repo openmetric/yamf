@@ -8,7 +8,6 @@ import (
 	"strconv"
 )
 
-// shared api response body
 type apiResponseBody struct {
 	Success bool          `json:"success"`
 	Message string        `json:"message"`
@@ -81,7 +80,7 @@ func (w *worker) apiCreateRule(c *gin.Context) {
 		return
 	}
 
-	w.scheduleRule(rule)
+	w.startSchedule(rule)
 
 	apiWriteSuccess(c, []*types.Rule{rule})
 }
@@ -115,7 +114,12 @@ func (w *worker) apiUpdateRule(c *gin.Context) {
 		return
 	}
 
-	w.updateRule(rule)
+	if err = w.rdb.Update(id, rule); err != nil {
+		apiWriteFail(c, 500, "Error saving rule to db, err: %s", err)
+		return
+	}
+
+	w.updateSchedule(rule)
 
 	apiWriteSuccess(c, []*types.Rule{rule})
 }
@@ -142,7 +146,7 @@ func (w *worker) apiDeleteRule(c *gin.Context) {
 		apiWriteFail(c, 500, "Error deleting rule from db, err: %s", err)
 	}
 
-	w.stopRule(id)
+	w.stopSchedule(id)
 
 	apiWriteSuccess(c, []*types.Rule{rule})
 }
@@ -159,5 +163,5 @@ func (w *worker) runAPIServer() {
 
 	router.NoRoute(func(c *gin.Context) { apiWriteFail(c, 404, "no such endpoint") })
 
-	router.Run(w.config.ListenAddr)
+	router.Run(w.config.ListenAddr) // nolint
 }
