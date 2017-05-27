@@ -1,4 +1,4 @@
-package main
+package types
 
 import (
 	"encoding/json"
@@ -6,12 +6,12 @@ import (
 	"github.com/HouzuoGuo/tiedot/db"
 	"github.com/HouzuoGuo/tiedot/dberr"
 	"github.com/fatih/structs"
-	"math/rand"
-	"time"
 )
 
 // Rule defines a check and how to schedule check tasks.
 type Rule struct {
+	// `json` tag is for http api serialization, `structs` is for tiedot database serialization
+
 	Type  string          `json:"type" structs:"type"`
 	Check CheckDefinition `json:"check" structs:"check,omitnested"` // check definition
 
@@ -21,21 +21,18 @@ type Rule struct {
 	Timeout  Duration `json:"timeout" structs:"timeout,flatten"`  // max execution time of a single check, should be smaller than interval
 
 	Metadata map[string]interface{} `json:"metadata" structs:"metadata"`
-
-	// used internally, stop signal
-	stop chan struct{}
 }
 
 // NewRuleFromJSON unmarshals a json buffer into Rule object.
-// If ignoreID is true, the returned Rule object will have ID=0
-func NewRuleFromJSON(spec []byte, ignoreID bool) (*Rule, error) {
+// If resetID is true, the returned Rule object will have ID=0
+func NewRuleFromJSON(data []byte, resetID bool) (*Rule, error) {
 	var err error
 	var holder = new(struct {
 		Rule
 		Check json.RawMessage `json:"check"`
 	})
 
-	if err = json.Unmarshal(spec, holder); err != nil {
+	if err = json.Unmarshal(data, holder); err != nil {
 		return nil, err
 	}
 
@@ -64,58 +61,26 @@ func NewRuleFromJSON(spec []byte, ignoreID bool) (*Rule, error) {
 		rule.Timeout = rule.Interval
 	}
 
-	if ignoreID {
+	if resetID {
 		rule.ID = 0
 	}
 
 	return rule, nil
 }
 
-// convert struct to a map[string]interface{} to be inserted into tiedot
-func (rule *Rule) Map() map[string]interface{} {
-	r := structs.Map(rule)
-	return r
+// Map wraps fatih/structs.Map, returns map[string]interface{} of the Rule struct
+func (r *Rule) Map() map[string]interface{} {
+	m := structs.Map(r)
+	return m
 }
 
-// Start scheduling check tasks.
-func (rule *Rule) Start(publish func(*Task)) {
-	rule.stop = make(chan struct{})
-
-	go func() {
-		// sleep a random time (between 0 and interval), so that checks can be distributes evenly.
-		sleep := time.Duration(rand.Int63n(rule.Interval.Nanoseconds())) * time.Nanosecond
-		time.Sleep(sleep)
-
-		ticker := time.NewTicker(rule.Interval.Duration)
-		for {
-			select {
-			case <-ticker.C:
-				// TODO generate and publish a task
-				task := &Task{
-					RuleID: rule.ID,
-				}
-				publish(task)
-			case <-rule.stop:
-				ticker.Stop()
-				rule.stop = nil
-				return
-			}
-		}
-	}()
-}
-
-// Stop scheduling check tasks.
-func (rule *Rule) Stop() {
-	if rule.stop != nil {
-		close(rule.stop)
-	}
-}
-
+// RuleDB wraps underlying database operation
 type RuleDB struct {
 	db  *db.DB
 	col *db.Col
 }
 
+// NewRuleDB creates an RuleDB instance
 func NewRuleDB(dbPath string) (*RuleDB, error) {
 	var err error
 	rdb := &RuleDB{}
@@ -132,14 +97,19 @@ func NewRuleDB(dbPath string) (*RuleDB, error) {
 	return rdb, nil
 }
 
-func (rdb *RuleDB) GetAllRules() ([]*Rule, error) {
+// GetAll rules from db
+func (rdb *RuleDB) GetAll() ([]*Rule, error) {
+	if rdb.db == nil {
+		return nil, fmt.Errorf("query on closed db")
+	}
+
 	rules := make([]*Rule, 0)
 
 	rdb.col.ForEachDoc(func(id int, doc []byte) (moveOn bool) {
 		var rule *Rule
 		var err error
 
-		if rule, err = NewRuleFromJSON(doc, false); err != nil {
+		if rule, err = NewRuleFromJSON(doc, true); err != nil {
 			// TODO check error and move on
 			return true
 		}
@@ -153,12 +123,18 @@ func (rdb *RuleDB) GetAllRules() ([]*Rule, error) {
 	return rules, nil
 }
 
-func (rdb *RuleDB) GetRule(id int) (*Rule, error) {
+// Get a rule by id
+func (rdb *RuleDB) Get(id int) (*Rule, error) {
+	if rdb.db == nil {
+		return nil, fmt.Errorf("query on closed db")
+	}
+
 	var rule *Rule
 	var doc map[string]interface{}
 	var docB []byte
 	var err error
 
+	// TODO, avoid two phase Marshal+Unmarshal, consider using mitchellh/mapstructure
 	if doc, err = rdb.col.Read(id); err != nil {
 		if dberr.Type(err) == dberr.ErrorNoDoc {
 			return nil, nil
@@ -179,7 +155,12 @@ func (rdb *RuleDB) GetRule(id int) (*Rule, error) {
 	return rule, nil
 }
 
-func (rdb *RuleDB) InsertRule(rule *Rule) (int, error) {
+// Insert a rule to database, returns id if successfully inserted
+func (rdb *RuleDB) Insert(rule *Rule) (int, error) {
+	if rdb.db == nil {
+		return 0, fmt.Errorf("query on closed db")
+	}
+
 	id, err := rdb.col.Insert(rule.Map())
 	if err == nil {
 		rule.ID = id
@@ -187,7 +168,12 @@ func (rdb *RuleDB) InsertRule(rule *Rule) (int, error) {
 	return id, err
 }
 
-func (rdb *RuleDB) UpdateRule(id int, rule *Rule) error {
+// Update an existing rule in database
+func (rdb *RuleDB) Update(id int, rule *Rule) error {
+	if rdb.db == nil {
+		return fmt.Errorf("query on closed db")
+	}
+
 	err := rdb.col.Update(id, rule.Map())
 	if err == nil {
 		rule.ID = id
@@ -195,10 +181,16 @@ func (rdb *RuleDB) UpdateRule(id int, rule *Rule) error {
 	return err
 }
 
-func (rdb *RuleDB) DeleteRule(id int) error {
+// Delete a rule by id
+func (rdb *RuleDB) Delete(id int) error {
+	if rdb.db == nil {
+		return fmt.Errorf("delete on closed db")
+	}
+
 	return rdb.col.Delete(id)
 }
 
+// Close rule db
 func (rdb *RuleDB) Close() error {
 	err := rdb.db.Close()
 

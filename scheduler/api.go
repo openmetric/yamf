@@ -1,0 +1,163 @@
+package scheduler
+
+import (
+	"fmt"
+	"github.com/openmetric/yamf/internal/types"
+	"gopkg.in/gin-gonic/gin.v1"
+	"io/ioutil"
+	"strconv"
+)
+
+// shared api response body
+type apiResponseBody struct {
+	Success bool          `json:"success"`
+	Message string        `json:"message"`
+	Rules   []*types.Rule `json:"rules"`
+}
+
+func apiWriteSuccess(c *gin.Context, rules []*types.Rule) {
+	c.JSON(200, apiResponseBody{
+		Success: true,
+		Message: "",
+		Rules:   rules,
+	})
+}
+
+func apiWriteFail(c *gin.Context, code int, messageFmt string, v ...interface{}) {
+	c.JSON(code, apiResponseBody{
+		Success: false,
+		Message: fmt.Sprintf(messageFmt, v...),
+		Rules:   make([]*types.Rule, 0),
+	})
+}
+
+func (w *worker) apiGetRule(c *gin.Context) {
+	var rule *types.Rule
+	var id int
+	var err error
+
+	if id, err = strconv.Atoi(c.Param("id")); err != nil {
+		apiWriteFail(c, 400, "Bad rule id: %s", c.Param("id"))
+		return
+	}
+
+	if rule, err = w.rdb.Get(id); err != nil {
+		apiWriteFail(c, 500, "Error loading rule from db, err: %s", err)
+	} else if rule == nil {
+		apiWriteFail(c, 404, "Rule not found")
+	} else {
+		apiWriteSuccess(c, []*types.Rule{rule})
+	}
+}
+
+func (w *worker) apiListRules(c *gin.Context) {
+	var rules []*types.Rule
+	var err error
+
+	if rules, err = w.rdb.GetAll(); err != nil {
+		apiWriteFail(c, 500, "Error loading rules from db, err: %s", err)
+	} else {
+		apiWriteSuccess(c, rules)
+	}
+}
+
+func (w *worker) apiCreateRule(c *gin.Context) {
+	var body []byte
+	var rule *types.Rule
+	var err error
+
+	if body, err = ioutil.ReadAll(c.Request.Body); err != nil {
+		apiWriteFail(c, 500, "Error reading request body, err: %s", err)
+		return
+	}
+
+	if rule, err = types.NewRuleFromJSON(body, true); err != nil {
+		apiWriteFail(c, 400, "Error parsing body, err: %s", err)
+		return
+	}
+
+	if _, err = w.rdb.Insert(rule); err != nil {
+		apiWriteFail(c, 500, "Error saving rule to db, err: %s", err)
+		return
+	}
+
+	w.scheduleRule(rule)
+
+	apiWriteSuccess(c, []*types.Rule{rule})
+}
+
+func (w *worker) apiUpdateRule(c *gin.Context) {
+	var body []byte
+	var rule *types.Rule
+	var err error
+	var id int
+
+	if id, err = strconv.Atoi(c.Param("id")); err != nil {
+		apiWriteFail(c, 400, "Bad rule id: %s", c.Param("id"))
+		return
+	}
+
+	if rule, err = w.rdb.Get(id); err != nil {
+		apiWriteFail(c, 500, "Error loading old rule from db, err: %s", err)
+		return
+	} else if rule == nil {
+		apiWriteFail(c, 404, "Rule id does not exist, not updating anything")
+		return
+	}
+
+	if body, err = ioutil.ReadAll(c.Request.Body); err != nil {
+		apiWriteFail(c, 500, "Error reading request body, err: %s", err)
+		return
+	}
+
+	if rule, err = types.NewRuleFromJSON(body, true); err != nil {
+		apiWriteFail(c, 400, "Error parsing body, err: %s", err)
+		return
+	}
+
+	w.updateRule(rule)
+
+	apiWriteSuccess(c, []*types.Rule{rule})
+}
+
+func (w *worker) apiDeleteRule(c *gin.Context) {
+	var err error
+	var rule *types.Rule
+	var id int
+
+	if id, err = strconv.Atoi(c.Param("id")); err != nil {
+		apiWriteFail(c, 400, "Bad rule id: %s", c.Param("id"))
+		return
+	}
+
+	if rule, err = w.rdb.Get(id); err != nil {
+		apiWriteFail(c, 500, "Error loading rule from db, err: %s", err)
+		return
+	} else if rule == nil {
+		apiWriteFail(c, 404, "Rule id does not exist, not updating anything")
+		return
+	}
+
+	if err = w.rdb.Delete(id); err != nil {
+		apiWriteFail(c, 500, "Error deleting rule from db, err: %s", err)
+	}
+
+	w.stopRule(id)
+
+	apiWriteSuccess(c, []*types.Rule{rule})
+}
+
+func (w *worker) runAPIServer() {
+	router := gin.New()
+	v1 := router.Group("v1")
+
+	v1.GET("/rules", w.apiListRules)
+	v1.POST("/rules", w.apiCreateRule)
+	v1.GET("/rules/:id", w.apiGetRule)
+	v1.PUT("/rules/:id", w.apiUpdateRule)
+	v1.DELETE("/rules/:id", w.apiDeleteRule)
+
+	router.NoRoute(func(c *gin.Context) { apiWriteFail(c, 404, "no such endpoint") })
+
+	router.Run(w.config.ListenAddr)
+}
