@@ -26,7 +26,7 @@ type worker struct {
 // Run the scheduler
 func Run(config *Config) {
 	publish := func(t *types.Task) {
-		fmt.Println("Publish Task:", t.RuleID, "metadata:", t.Metadata)
+		fmt.Println(t.Schedule, "Publish Task:", t.RuleID, "metadata:", t.Metadata)
 	}
 
 	rdb, _ := types.NewRuleDB(config.DBPath)
@@ -38,6 +38,17 @@ func Run(config *Config) {
 		rules:   make(map[int]*ruleScheduler),
 	}
 
+	// get all rules from db and start scheduling
+	rules, err := rdb.GetAll()
+	if err != nil {
+		// TODO process errors
+	} else {
+		fmt.Printf("Loaded %d rules from db\n", len(rules))
+		for _, rule := range rules {
+			w.startSchedule(rule)
+		}
+	}
+
 	w.runAPIServer()
 }
 
@@ -46,6 +57,7 @@ type ruleScheduler struct {
 	stop chan struct{}
 }
 
+// start a go routine to schedule the given rule
 func (w *worker) startSchedule(rule *types.Rule) {
 	if rule.Paused {
 		return
@@ -56,6 +68,8 @@ func (w *worker) startSchedule(rule *types.Rule) {
 		stop: make(chan struct{}),
 	}
 
+	fmt.Println("Start scheduling rule:", rule.ID)
+
 	go func() {
 		// sleep a random time (between 0 and interval), so that checks can be distributes evenly.
 		sleep := time.Duration(rand.Int63n(s.Interval.Nanoseconds())) * time.Nanosecond
@@ -65,12 +79,7 @@ func (w *worker) startSchedule(rule *types.Rule) {
 		for {
 			select {
 			case <-ticker.C:
-				task := &types.Task{
-					RuleID:   s.ID,
-					Check:    s.Check,
-					Metadata: s.Metadata,
-				}
-				w.publish(task)
+				w.publish(types.NewTaskFromRule(rule))
 			case <-s.stop:
 				ticker.Stop()
 				s.stop = nil

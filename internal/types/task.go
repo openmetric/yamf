@@ -20,3 +20,17 @@ type Task struct {
 
 	Check CheckDefinition // check definition
 }
+
+func NewTaskFromRule(rule *Rule) *Task {
+	now := time.Now()
+	task := &Task{
+		Type:       rule.Type,
+		Check:      rule.Check,
+		Schedule:   now,
+		Timeout:    rule.Timeout,
+		Expiration: now.Add(rule.Timeout.Duration),
+		Metadata:   rule.Metadata,
+		RuleID:     rule.ID,
+	}
+	return task
+}
