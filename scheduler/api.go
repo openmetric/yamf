@@ -152,9 +152,11 @@ func (w *worker) apiDeleteRule(c *gin.Context) {
 }
 
 func (w *worker) runAPIServer() {
-	router := gin.New()
-	v1 := router.Group("v1")
+	gin.SetMode(gin.ReleaseMode)
 
+	router := gin.Default()
+
+	v1 := router.Group("v1")
 	v1.GET("/rules", w.apiListRules)
 	v1.POST("/rules", w.apiCreateRule)
 	v1.GET("/rules/:id", w.apiGetRule)
@@ -162,6 +164,5 @@ func (w *worker) runAPIServer() {
 	v1.DELETE("/rules/:id", w.apiDeleteRule)
 
 	router.NoRoute(func(c *gin.Context) { apiWriteFail(c, 404, "no such endpoint") })
-
 	router.Run(w.config.ListenAddr) // nolint
 }

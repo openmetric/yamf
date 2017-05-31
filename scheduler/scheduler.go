@@ -1,8 +1,8 @@
 package scheduler
 
 import (
-	"fmt"
 	"github.com/openmetric/yamf/internal/types"
+	"github.com/openmetric/yamf/logging"
 	"math/rand"
 	"sync"
 	"time"
@@ -10,40 +10,42 @@ import (
 
 // Config of scheduler
 type Config struct {
-	ListenAddr string
-	DBPath     string
+	ListenAddr      string                `yaml:listen_addr`
+	APIUrlPrefix    string                `yaml:api_url_prefix`
+	DBPath          string                `yaml:db_path`
+	Log             *logging.LoggerConfig `yaml:log`
+	HTTPLogFilename string                `yaml:http_log_filename`
 }
 
 type worker struct {
 	config *Config
 
-	publish func(*types.Task)
-	rdb     *types.RuleDB
-	rules   map[int]*ruleScheduler
+	rdb   *types.RuleDB
+	rules map[int]*ruleScheduler
 	sync.RWMutex
+
+	logger *logging.Logger
 }
 
 // Run the scheduler
 func Run(config *Config) {
-	publish := func(t *types.Task) {
-		fmt.Println(t.Schedule, "Publish Task:", t.RuleID, "metadata:", t.Metadata)
-	}
-
 	rdb, _ := types.NewRuleDB(config.DBPath)
 
 	w := &worker{
-		config:  config,
-		publish: publish,
-		rdb:     rdb,
-		rules:   make(map[int]*ruleScheduler),
+		config: config,
+		rdb:    rdb,
+		rules:  make(map[int]*ruleScheduler),
+
+		logger: logging.GetLogger("scheduler", config.Log),
 	}
 
 	// get all rules from db and start scheduling
 	rules, err := rdb.GetAll()
 	if err != nil {
 		// TODO process errors
+		w.logger.Error("Failed to GetAll() rules, err: ", err)
 	} else {
-		fmt.Printf("Loaded %d rules from db\n", len(rules))
+		w.logger.Infof("Loaded %d rules from db", len(rules))
 		for _, rule := range rules {
 			w.startSchedule(rule)
 		}
@@ -68,7 +70,7 @@ func (w *worker) startSchedule(rule *types.Rule) {
 		stop: make(chan struct{}),
 	}
 
-	fmt.Println("Start scheduling rule:", rule.ID)
+	w.logger.Info("Start scheduling rule:", rule.ID)
 
 	go func() {
 		// sleep a random time (between 0 and interval), so that checks can be distributes evenly.
@@ -107,4 +109,8 @@ func (w *worker) stopSchedule(id int) {
 func (w *worker) updateSchedule(rule *types.Rule) {
 	w.stopSchedule(rule.ID)
 	w.startSchedule(rule)
+}
+
+func (w *worker) publish(t *types.Task) {
+	w.logger.Info("Publish Task:", t.RuleID, "metadata", t.Metadata)
 }
