@@ -5,6 +5,7 @@ import (
 	"github.com/openmetric/yamf/internal/types"
 	"gopkg.in/gin-gonic/gin.v1"
 	"io/ioutil"
+	"os"
 	"strconv"
 )
 
@@ -154,7 +155,15 @@ func (w *worker) apiDeleteRule(c *gin.Context) {
 func (w *worker) runAPIServer() {
 	gin.SetMode(gin.ReleaseMode)
 
-	router := gin.Default()
+	router := gin.New()
+	router.Use(gin.Recovery())
+
+	logFile, err := os.OpenFile(w.config.HTTPLogFilename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+	if err != nil {
+		fmt.Println("Failed to open logfile:", err)
+		os.Exit(1)
+	}
+	router.Use(gin.LoggerWithWriter(logFile))
 
 	v1 := router.Group("v1")
 	v1.GET("/rules", w.apiListRules)

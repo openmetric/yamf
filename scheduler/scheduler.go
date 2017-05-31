@@ -11,7 +11,6 @@ import (
 // Config of scheduler
 type Config struct {
 	ListenAddr      string                `yaml:listen_addr`
-	APIUrlPrefix    string                `yaml:api_url_prefix`
 	DBPath          string                `yaml:db_path`
 	Log             *logging.LoggerConfig `yaml:log`
 	HTTPLogFilename string                `yaml:http_log_filename`

@@ -9,6 +9,8 @@ import (
 
 // common logging setup shared by scheduler and executors
 
+const defaultFormat string = `[%{time:15:04:05.000}][%{module}][%{level}] %{message}`
+
 // Logger wraps logging.Logger so that other code does not need to import op/go-logging
 type Logger struct {
 	logging.Logger
@@ -23,11 +25,19 @@ type LoggerConfig struct {
 	Format string `yaml:"format"`
 }
 
+func NewLoggerConfig() *LoggerConfig {
+	return &LoggerConfig{
+		Filename: "/dev/stdout",
+		Level:    "info",
+		Format:   defaultFormat,
+	}
+}
+
 // GetLogger creates a logger
 func GetLogger(module string, config *LoggerConfig) *Logger {
 	format := config.Format
 	if format == "" {
-		format = `[%{time:15:04:05.000}][%{module}][%{level}] %{message}`
+		format = defaultFormat
 	}
 	formatter := logging.MustStringFormatter(format)
 
