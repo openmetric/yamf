@@ -1,236 +1,141 @@
-package main
+package scheduler
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
+	"github.com/nsqio/go-nsq"
+	"github.com/openmetric/yamf/internal/types"
+	"github.com/openmetric/yamf/logging"
 	"math/rand"
-	"regexp"
+	"os"
+	"sync"
 	"time"
 )
 
-// Task defines what to do
-type Task struct {
-	// Type of the task, currently only "graphite" is planned
-	//   * graphite: performs a graphite render query and check the response data
-	Type string
-
-	// if ``Type`` is graphite, then the details is attaches as ``GraphiteTask``
-	GraphiteTask GraphiteTask
-
-	// When a executor fetches a task, it should check if current time is beyond
-	// ``Expiration``, if the task has expired, there is no meaning to do this task
-	// any more, the executor should skip this task.
-	Expiration time.Time
-
-	// The max time should an executor spend on executing this task. If any step
-	// (e.g. querying graphite api) stucks too long, the executor should abort the task.
-	Timeout time.Duration
-
-	// Metadata passed from ``Rule`` and further passed on to ``Event``
-	Metadata map[string]interface{}
-
-	// RuleID of the ``Rule`` which generated this Task, it is useless for the executor,
-	// but can be passed on and ``Event``s' consumer may found it useful.
-	RuleID int
-
-	// When this task was published, started, finished
-	PublishTime time.Time
-	StartTime   time.Time
-	FinishTime  time.Time
+// Config of scheduler
+type Config struct {
+	ListenAddr      string                `yaml:"listen_addr"`
+	DBPath          string                `yaml:"db_path"`
+	NSQDTcpAddr     string                `yaml:"nsqd_tcp_address"`
+	NSQDTopic       string                `yaml:"nsqd_topic"`
+	Log             *logging.LoggerConfig `yaml:"log"`
+	HTTPLogFilename string                `yaml:"http_log_filename"`
 }
 
-// GraphiteTask defines a graphite query and compare expression
-type GraphiteTask struct {
-	// Used to form graphite render api queries,
-	//   --> "?target={Query}&from={From}&until={Until}"
-	Query string `json:"query"`
-	From  string `json:"from"`
-	Until string `json:"until"`
+type worker struct {
+	config *Config
 
-	// Pattern used to extract metadata from api response.
-	// MetaExtractPattern is a regular expression with named capture groups.
-	// If a pattern is provided, ``target`` which do not match would be ignored,
-	// not checks will be performed and thus no events would be yield.
-	// If no pattern is provided (is empty string), then all ``target``s will be
-	// further processed, but no metadata would be extracted.
-	// Examples:
-	//   pattern: "^(?P<resource_type>[^.]+)\.(?P<host>[^.]+)\.[^.]+\.user$"
-	//   * "pm.server1.cpu.user" matches, with: resource_type=pm, host=server1
-	//   * "pm.server2.cpu.user" matches, with: resource_type=pm, host=server2
-	//   * "pm.server3.cpu.idle" does not match, and so ignored
-	MetaExtractPattern string `json:"meta_extract_pattern"`
+	rdb      *types.RuleDB
+	producer *nsq.Producer
+	rules    map[int]*ruleScheduler
+	sync.RWMutex
 
-	// Threshold of warning and critical, must be in the following forms:
-	//   "> 1.0", ">= 1.0", "== 1.0", "<= 1.0", "< 1.0", "!= 1.0", "== nil", "!= nil"
-	// The last value of a series is used as left operand. If the last value is
-	// nil but expression is not nil related, Unknown is yield.
-	// Evaluation order:
-	//   * evaluate critical expression, next if not satisfied, or yield "critical"
-	//   * evaluate warning expression, next if not satisfied, or yield "warning"
-	//   * yield "ok"
-	CriticalExpr string `json:"critical_expr"`
-	WarningExpr  string `json:"warning_expr"`
-
-	// Specify graphite api url, so we can query different graphite instances.
-	// NOT to be implemented for first release.
-	EndpointURL string `json:"endpoint_url"`
+	logger *logging.Logger
 }
 
-// Rule defines how to schedule tasks
-type Rule struct {
-	// The following fields are copied to generated ``Task`` as is
-	Type          string        `json:"type"`
-	GraphiteTask  GraphiteTask  `json:"graphite_task"`
-	TimeoutString string        `json:"timeout"`
-	Timeout       time.Duration `json:"-"`
+// Run the scheduler
+func Run(config *Config) {
+	logger := logging.GetLogger("scheduler", config.Log)
 
-	// At which interval should tasks be generated
-	// Since json.Unmarshal() does not support representation like "10s", we convert manually
-	IntervalString string        `json:"interval"`
-	Interval       time.Duration `json:"-"`
+	rdb, err := types.NewRuleDB(config.DBPath)
+	if err != nil {
+		logger.Fatal("error initializing rule db: ", err)
+		os.Exit(1)
+	}
 
-	// a rule can be paused, so that no tasks are generated
-	Paused bool `json:"paused"`
+	nsqdConfig := nsq.NewConfig()
+	producer, err := nsq.NewProducer(config.NSQDTcpAddr, nsqdConfig)
+	if err != nil {
+		logger.Fatal("error initializing nsqd producer: ", err)
+		os.Exit(1)
+	}
 
-	// Metadata to be passed on to ``Task``s and further ``Event``s
-	Metadata map[string]interface{} `json:"metadata"`
+	w := &worker{
+		config:   config,
+		rdb:      rdb,
+		producer: producer,
+		rules:    make(map[int]*ruleScheduler),
+		logger:   logger,
+	}
 
-	// ID of the rule
-	ID int `json:"id"`
+	// get all rules from db and start scheduling
+	rules, err := rdb.GetAll()
+	if err != nil {
+		// TODO process errors
+		w.logger.Error("Failed to GetAll() rules, err: ", err)
+	} else {
+		w.logger.Infof("Loaded %d rules from db", len(rules))
+		for _, rule := range rules {
+			w.startSchedule(rule)
+		}
+	}
 
-	// TODO add creation time, etc.
+	w.runAPIServer()
+}
 
-	// used internally, used to stop a rule
+type ruleScheduler struct {
+	types.Rule
 	stop chan struct{}
 }
 
-// StartScheduling starts a goroutine to generate tasks periodically
-func (rule *Rule) StartScheduling() {
-	rule.stop = make(chan struct{})
+// start a go routine to schedule the given rule
+func (w *worker) startSchedule(rule *types.Rule) {
+	if rule.Paused {
+		return
+	}
+
+	s := ruleScheduler{
+		Rule: *rule,
+		stop: make(chan struct{}),
+	}
+
+	w.logger.Info("Start scheduling rule:", rule.ID)
 
 	go func() {
-		// sleep a random time (between 0 and interval), so that checks can be distributed evenly.
-		time.Sleep(time.Duration(rand.Int63n(rule.Interval.Nanoseconds())) * time.Nanosecond)
+		// sleep a random time (between 0 and interval), so that checks can be distributes evenly.
+		sleep := time.Duration(rand.Int63n(s.Interval.Nanoseconds())) * time.Nanosecond
+		time.Sleep(sleep)
 
-		ticker := time.NewTicker(rule.Interval)
+		ticker := time.NewTicker(s.Interval.Duration)
 		for {
 			select {
 			case <-ticker.C:
-				// Generate and publish a Task
-				task := Task{
-					Type:         rule.Type,
-					GraphiteTask: rule.GraphiteTask,
-					Expiration:   time.Now().Add(rule.Interval),
-					Timeout:      rule.Timeout,
-					Metadata:     rule.Metadata,
-					RuleID:       rule.ID,
-					PublishTime:  time.Now(),
-				}
-				PublishTask(&task)
-			case <-rule.stop:
+				w.publish(types.NewTaskFromRule(rule))
+			case <-s.stop:
 				ticker.Stop()
-				rule.stop = nil
+				s.stop = nil
 				return
 			}
 		}
 	}()
+
+	w.Lock()
+	defer w.Unlock()
+	w.rules[s.ID] = &s
 }
 
-// StopScheduling stops the goroutine which is generating tasks
-func (rule *Rule) StopScheduling() {
-	if rule.stop != nil {
-		close(rule.stop)
-	}
-}
-
-// NewRuleFromJSON creates a Rule object by decoding spec as json
-func NewRuleFromJSON(spec []byte) (*Rule, error) {
-	var err error
-
-	rule := &Rule{}
-
-	if err = json.Unmarshal(spec, rule); err != nil {
-		return nil, err
-	}
-
-	// check if all fields meets requirement
-
-	// ensure rule.ID is not set
-	//if rule.ID != 0 {
-	//return nil, errors.New("`id` must NOT be set")
-	//}
-
-	// reset ID to 0, it should be assigned elsewhere
-	rule.ID = 0
-
-	// ensure rule.Type is set
-	if rule.Type == "" {
-		return nil, errors.New("`type` must be set")
-	}
-
-	// ensure rule.Interval is set
-	if rule.IntervalString == "" {
-		return nil, errors.New("`interval` must be set")
-	}
-	if rule.Interval, err = time.ParseDuration(rule.IntervalString); err != nil {
-		return nil, err
-	}
-
-	// set proper rule.Timeout
-	if rule.TimeoutString == "" {
-		rule.Timeout = rule.Interval
-	}
-	if rule.Timeout, err = time.ParseDuration(rule.TimeoutString); err != nil {
-		return nil, err
-	}
-	if rule.Timeout > rule.Interval {
-		rule.Timeout = rule.Interval
-	}
-
-	if rule.Type == "graphite" {
-		if err = checkGraphiteTask(&rule.GraphiteTask); err != nil {
-			return nil, err
+func (w *worker) stopSchedule(id int) {
+	if s, ok := w.rules[id]; ok {
+		if s.stop != nil {
+			close(s.stop)
 		}
+		w.Lock()
+		defer w.Unlock()
+		delete(w.rules, id)
 	}
-
-	return rule, nil
 }
 
-// check if the provided graphte task is valid, and set proper values
-func checkGraphiteTask(task *GraphiteTask) error {
-	var err error
-
-	if task.Query == "" {
-		return errors.New("`query` must be set")
-	}
-
-	if task.From == "" {
-		task.From = "-5min"
-	}
-	if task.Until == "" {
-		task.Until = "now"
-	}
-
-	if task.MetaExtractPattern != "" {
-		if _, err = regexp.Compile(task.MetaExtractPattern); err != nil {
-			return err
-		}
-	}
-
-	compareExprRegexp, _ := regexp.Compile(`^((>|>=|==|<=|<|!=) *-?[0-9]+(\.[0-9]+)?|(==|!=) *nil)$`)
-	if !compareExprRegexp.MatchString(task.CriticalExpr) {
-		return errors.New("invalid `critical_expr`")
-	}
-	if !compareExprRegexp.MatchString(task.WarningExpr) {
-		return errors.New("invalid `warning_expr`")
-	}
-
-	return nil
+func (w *worker) updateSchedule(rule *types.Rule) {
+	w.stopSchedule(rule.ID)
+	w.startSchedule(rule)
 }
 
-// PublishTask publishes the task
-func PublishTask(task *Task) {
-	// TODO implement me
-	fmt.Printf("%#v\n", task)
+func (w *worker) publish(t *types.Task) {
+	w.logger.Info("Publish Task:", t.RuleID, "metadata", t.Metadata)
+
+	// TODO consider use more efficient serialization methods, e.g. protobuf
+	if data, err := json.Marshal(t); err != nil {
+		w.logger.Error("Failed to marshal task into json")
+	} else {
+		w.producer.Publish(w.config.NSQDTopic, data)
+	}
 }
