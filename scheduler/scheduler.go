@@ -1,26 +1,32 @@
 package scheduler
 
 import (
+	"encoding/json"
+	"github.com/nsqio/go-nsq"
 	"github.com/openmetric/yamf/internal/types"
 	"github.com/openmetric/yamf/logging"
 	"math/rand"
+	"os"
 	"sync"
 	"time"
 )
 
 // Config of scheduler
 type Config struct {
-	ListenAddr      string                `yaml:listen_addr`
-	DBPath          string                `yaml:db_path`
-	Log             *logging.LoggerConfig `yaml:log`
-	HTTPLogFilename string                `yaml:http_log_filename`
+	ListenAddr      string                `yaml:"listen_addr"`
+	DBPath          string                `yaml:"db_path"`
+	NSQDTcpAddr     string                `yaml:"nsqd_tcp_address"`
+	NSQDTopic       string                `yaml:"nsqd_topic"`
+	Log             *logging.LoggerConfig `yaml:"log"`
+	HTTPLogFilename string                `yaml:"http_log_filename"`
 }
 
 type worker struct {
 	config *Config
 
-	rdb   *types.RuleDB
-	rules map[int]*ruleScheduler
+	rdb      *types.RuleDB
+	producer *nsq.Producer
+	rules    map[int]*ruleScheduler
 	sync.RWMutex
 
 	logger *logging.Logger
@@ -28,14 +34,27 @@ type worker struct {
 
 // Run the scheduler
 func Run(config *Config) {
-	rdb, _ := types.NewRuleDB(config.DBPath)
+	logger := logging.GetLogger("scheduler", config.Log)
+
+	rdb, err := types.NewRuleDB(config.DBPath)
+	if err != nil {
+		logger.Fatal("error initializing rule db: ", err)
+		os.Exit(1)
+	}
+
+	nsqdConfig := nsq.NewConfig()
+	producer, err := nsq.NewProducer(config.NSQDTcpAddr, nsqdConfig)
+	if err != nil {
+		logger.Fatal("error initializing nsqd producer: ", err)
+		os.Exit(1)
+	}
 
 	w := &worker{
-		config: config,
-		rdb:    rdb,
-		rules:  make(map[int]*ruleScheduler),
-
-		logger: logging.GetLogger("scheduler", config.Log),
+		config:   config,
+		rdb:      rdb,
+		producer: producer,
+		rules:    make(map[int]*ruleScheduler),
+		logger:   logger,
 	}
 
 	// get all rules from db and start scheduling
@@ -112,4 +131,11 @@ func (w *worker) updateSchedule(rule *types.Rule) {
 
 func (w *worker) publish(t *types.Task) {
 	w.logger.Info("Publish Task:", t.RuleID, "metadata", t.Metadata)
+
+	// TODO consider use more efficient serialization methods, e.g. protobuf
+	if data, err := json.Marshal(t); err != nil {
+		w.logger.Error("Failed to marshal task into json")
+	} else {
+		w.producer.Publish(w.config.NSQDTopic, data)
+	}
 }
