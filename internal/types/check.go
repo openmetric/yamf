@@ -10,6 +10,8 @@ type CheckDefinition interface {
 	Validate() error
 }
 
+var thresholdExprRegexp, _ = regexp.Compile(`^((>|>=|==|<=|<|!=) *-?[0-9]+(\.[0-9]+)?|(==|!=) *nil)$`)
+
 // GraphiteCheck queries data from graphite and performs check on returned data
 type GraphiteCheck struct {
 	// Used to form graphite render api queries,
@@ -41,6 +43,7 @@ type GraphiteCheck struct {
 	//   * yield "ok"
 	CriticalExpr string `json:"critical_expr"`
 	WarningExpr  string `json:"warning_expr"`
+	UnknownExpr  string `json:"unknown_expr"`
 
 	// Specify graphite api url, so we can query different graphite instances.
 	// NOT to be implemented for first release.
@@ -62,12 +65,18 @@ func (c *GraphiteCheck) Validate() error {
 		}
 	}
 
-	thresholdExprRegexp, _ := regexp.Compile(`^((>|>=|==|<=|<|!=) *-?[0-9]+(\.[0-9]+)?|(==|!=) *nil)$`)
-	if !thresholdExprRegexp.MatchString(c.CriticalExpr) {
+	if c.CriticalExpr != "" && !thresholdExprRegexp.MatchString(c.CriticalExpr) {
 		return fmt.Errorf("Invalid `critical_expr`")
 	}
-	if !thresholdExprRegexp.MatchString(c.WarningExpr) {
+	if c.WarningExpr != "" && !thresholdExprRegexp.MatchString(c.WarningExpr) {
 		return fmt.Errorf("Invalid `warning_expr`")
+	}
+	if c.UnknownExpr != "" && !thresholdExprRegexp.MatchString(c.UnknownExpr) {
+		return fmt.Errorf("Invalid `unknown_expr`")
+	}
+
+	if c.CriticalExpr == "" && c.WarningExpr == "" && c.UnknownExpr == "" {
+		return fmt.Errorf("Must specify at least one threshold expression")
 	}
 
 	return nil
