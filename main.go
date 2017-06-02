@@ -40,7 +40,12 @@ func main() {
 		select {
 		case <-c:
 			logger.Info("Got stop signal, stopping...")
-			// TODO call $mode.Stop()
+			switch *mode {
+			case "scheduler":
+				//scheduler.Stop()
+			case "executor":
+				executor.Stop()
+			}
 			return
 		}
 	}
