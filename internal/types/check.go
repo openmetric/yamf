@@ -46,8 +46,7 @@ type GraphiteCheck struct {
 	UnknownExpr  string `json:"unknown_expr"`
 
 	// Specify graphite api url, so we can query different graphite instances.
-	// NOT to be implemented for first release.
-	EndpointURL string `json:"endpoint_url"`
+	GraphiteURL string `json:"graphite_url"`
 }
 
 // Validate the definition, return error description if any. Some values will be

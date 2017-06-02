@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"fmt"
 	"github.com/nsqio/go-nsq"
+	api "github.com/openmetric/graphite-api-client"
 	"github.com/openmetric/yamf/internal/types"
 	"github.com/openmetric/yamf/logging"
 	"net/http"
@@ -9,12 +11,11 @@ import (
 
 // Config of executor
 type Config struct {
-	NumWorkers            int                   `yaml:"num_workers"`
-	NSQLookupdHTTPAddr    string                `yaml:"nsqlookupd_http_address"`
-	NSQTopic              string                `yaml:"nsq_topic"`
-	NSQChannel            string                `yaml:"nsq_channel"`
-	DefaultGraphiteAPIURL string                `yaml:"default_graphite_api_url"`
-	Log                   *logging.LoggerConfig `yaml:"log"`
+	NumWorkers         int                   `yaml:"num_workers"`
+	NSQLookupdHTTPAddr string                `yaml:"nsqlookupd_http_address"`
+	NSQTopic           string                `yaml:"nsq_topic"`
+	NSQChannel         string                `yaml:"nsq_channel"`
+	Log                *logging.LoggerConfig `yaml:"log"`
 }
 
 type worker struct {
@@ -37,10 +38,11 @@ func Run(config *Config) {
 	workers = make([]*worker, config.NumWorkers)
 
 	for i := 0; i < config.NumWorkers; i++ {
+		name := fmt.Sprintf("executor-%d", i)
 		workers[i] = &worker{
 			config: config,
 			id:     i,
-			logger: logger,
+			logger: logging.GetLogger(name, config.Log),
 
 			stop: make(chan struct{}),
 		}
@@ -61,7 +63,7 @@ func (w *worker) Start() {
 	if w.consumer, err = nsq.NewConsumer(w.config.NSQTopic, w.config.NSQChannel, nsqConfig); err != nil {
 		w.logger.Fatal("Failed with nsq.NewConsumer()")
 	}
-	w.consumer.AddHandler(nsq.HandlerFunc(w.ExecuteTask))
+	w.consumer.AddHandler(nsq.HandlerFunc(w.executeTask))
 	if err = w.consumer.ConnectToNSQLookupd(w.config.NSQLookupdHTTPAddr); err != nil {
 		w.logger.Fatal("Failed to connect to nsqlookupd")
 	}
@@ -79,13 +81,37 @@ func (w *worker) Stop() {
 	}
 }
 
-func (w *worker) ExecuteTask(message *nsq.Message) error {
+func (w *worker) executeTask(message *nsq.Message) error {
 	var task *types.Task
 	var err error
 	if task, err = types.NewTaskFromJSON(message.Body); err != nil {
-		w.logger.Errorf("[executor-%d] failed to decode task from message, %s", w.id, err)
+		w.logger.Errorf("failed to decode task from message, %s", err)
 	} else {
-		w.logger.Debugf("[executor-%d] get task, rule id: %d", w.id, task.RuleID)
+		w.logger.Debugf("get task, rule id: %d", task.RuleID)
+
+		switch c := task.Check.(type) {
+		case *types.GraphiteCheck:
+			w.executeGraphiteCheck(c)
+		}
 	}
 	return nil
+}
+
+func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck) {
+	var query *api.RenderQuery
+	var resp *api.RenderResponse
+	var err error
+
+	query = api.NewRenderQuery(api.NewQueryTarget(c.Query))
+	query.SetFrom(c.From).SetUntil(c.Until)
+
+	w.logger.Debugf("Request URL: %s", query.URL(c.GraphiteURL, "json"))
+	resp, err = query.Request(c.GraphiteURL)
+	if err != nil {
+		w.logger.Errorf("Request to graphite server failed: %s", err)
+		return
+	}
+
+	metrics := resp.MultiFetchResponse.Metrics
+	w.logger.Debugf("Get %d metrics in response", len(metrics))
 }
