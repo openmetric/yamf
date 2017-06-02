@@ -170,6 +170,7 @@ func (w *worker) runAPIServer() {
 	v1.POST("/rules", w.apiCreateRule)
 	v1.GET("/rules/:id", w.apiGetRule)
 	v1.PUT("/rules/:id", w.apiUpdateRule)
+	v1.PATCH("/rules/:id", w.apiUpdateRule)
 	v1.DELETE("/rules/:id", w.apiDeleteRule)
 
 	router.NoRoute(func(c *gin.Context) { apiWriteFail(c, 404, "no such endpoint") })
