@@ -2,11 +2,21 @@ package executor
 
 import (
 	"fmt"
+	pb "github.com/go-graphite/carbonzipper/carbonzipperpb3"
 	"github.com/nsqio/go-nsq"
 	api "github.com/openmetric/graphite-api-client"
 	"github.com/openmetric/yamf/internal/types"
+	"github.com/openmetric/yamf/internal/utils"
 	"github.com/openmetric/yamf/logging"
 	"net/http"
+	"time"
+)
+
+const (
+	OK       = 0
+	Warning  = 1
+	Critical = 2
+	Unknown  = 3
 )
 
 // Config of executor
@@ -26,6 +36,8 @@ type worker struct {
 	consumer   *nsq.Consumer
 	httpclient *http.Client
 
+	emit func(*types.Event)
+
 	stop chan struct{}
 }
 
@@ -43,6 +55,12 @@ func Run(config *Config) {
 			config: config,
 			id:     i,
 			logger: logging.GetLogger(name, config.Log),
+
+			emit: func(e *types.Event) {
+				result, _ := e.Result.(*types.GraphiteCheckResult)
+				logger.Debugf("Event, rule id: %d, status: %d, value: %v, metadata: %#v\n",
+					e.RuleID, e.Status, result.MetricValue, e.Metadata)
+			},
 
 			stop: make(chan struct{}),
 		}
@@ -91,16 +109,18 @@ func (w *worker) executeTask(message *nsq.Message) error {
 
 		switch c := task.Check.(type) {
 		case *types.GraphiteCheck:
-			w.executeGraphiteCheck(c)
+			w.executeGraphiteCheck(c, task)
 		}
 	}
 	return nil
 }
 
-func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck) {
+func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 	var query *api.RenderQuery
 	var resp *api.RenderResponse
 	var err error
+
+	now := time.Now()
 
 	query = api.NewRenderQuery(api.NewQueryTarget(c.Query))
 	query.SetFrom(c.From).SetUntil(c.Until)
@@ -114,4 +134,84 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck) {
 
 	metrics := resp.MultiFetchResponse.Metrics
 	w.logger.Debugf("Get %d metrics in response", len(metrics))
+
+	metaExtractRegexp, _ := utils.CacheGetRegexp(c.MetaExtractPattern)
+	for _, metric := range metrics {
+		result := &types.GraphiteCheckResult{
+			ScheduleTime:  t.Schedule,
+			ExecutionTime: now,
+		}
+		event := &types.Event{
+			Source:   "rule",
+			Type:     "graphite",
+			RuleID:   t.RuleID,
+			Metadata: t.Metadata,
+			Result:   result,
+		}
+
+		// extract meta data
+		matches := metaExtractRegexp.FindStringSubmatch(metric.Name)
+		names := metaExtractRegexp.SubexpNames()
+		for i, match := range matches {
+			if i != 0 && names[i] != "" {
+				event.Metadata[names[i]] = match
+			}
+		}
+
+		// compare data
+		var isCritical, isWarning, isUnknown bool
+
+		v, t, isNull := getLastNonNullValue(metric, c.AllowedNullPoints)
+		result.MetricTime = time.Unix(int64(t), 0)
+		result.MetricValue = v
+
+		criticalExpr := types.NewThresholdExpr(c.CriticalExpr)
+		isCritical, isUnknown = criticalExpr.Evaluate(v, isNull)
+		if isUnknown {
+			// emit unknown event
+			event.Status = Unknown
+			w.emit(event)
+			continue
+		} else if isCritical {
+			// emit critical event
+			event.Status = Critical
+			w.emit(event)
+			continue
+		}
+
+		warningExpr := types.NewThresholdExpr(c.WarningExpr)
+		isWarning, isUnknown = warningExpr.Evaluate(v, isNull)
+		if isUnknown {
+			// emit unknown event
+			event.Status = Unknown
+			w.emit(event)
+			continue
+		} else if isWarning {
+			// emit warning event
+			event.Status = Warning
+			w.emit(event)
+			continue
+		}
+
+		event.Status = OK
+		w.emit(event)
+	}
+}
+
+func getLastNonNullValue(m *pb.FetchResponse, allowedNullPoints int) (v float64, t int32, isNull bool) {
+	l := len(m.Values)
+	for i := 1; i <= allowedNullPoints && i <= l; i++ {
+		if m.IsAbsent[l-i] {
+			continue
+		}
+		v = m.Values[l-i]
+		t = m.StopTime - int32(i-1)*m.StepTime
+		isNull = false
+		return v, t, isNull
+	}
+	// if we didn't return in the loop body, there were too many null points
+	v = 0
+	t = m.StopTime
+	isNull = true
+	return v, t, isNull
 }

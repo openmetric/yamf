@@ -18,7 +18,7 @@ type Task struct {
 	// hold data passed from rule, and attach more data after execution if any
 	Metadata map[string]interface{} `json:"metadata"`
 
-	RuleID int // the rule from which this task was generated
+	RuleID int `json:"rule_id"` // the rule from which this task was generated
 
 	Check CheckDefinition `json:"check"` // check definition
 }
