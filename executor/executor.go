@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"fmt"
-	pb "github.com/go-graphite/carbonzipper/carbonzipperpb3"
 	"github.com/nsqio/go-nsq"
 	api "github.com/openmetric/graphite-api-client"
 	"github.com/openmetric/yamf/internal/types"
@@ -162,7 +161,7 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 		// compare data
 		var isCritical, isWarning, isUnknown bool
 
-		v, t, absent := getLastNonNullValue(metric, c.MaxNullPoints)
+		v, t, absent := api.GetLastNonNullValue(metric, c.MaxNullPoints)
 		result.MetricTime = time.Unix(int64(t), 0)
 		result.MetricValue = v
 
@@ -195,22 +194,4 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 		event.Status = OK
 		w.emit(event)
 	}
-}
-
-func getLastNonNullValue(m *pb.FetchResponse, allowedNullPoints int) (v float64, t int32, absent bool) {
-	l := len(m.Values)
-	for i := 1; i <= allowedNullPoints && i <= l; i++ {
-		if m.IsAbsent[l-i] {
-			continue
-		}
-		v = m.Values[l-i]
-		t = m.StopTime - int32(i-1)*m.StepTime
-		absent = false
-		return v, t, absent
-	}
-	// if we didn't return in the loop body, there were too many null points
-	v = 0
-	t = m.StopTime
-	absent = true
-	return v, t, absent
 }
