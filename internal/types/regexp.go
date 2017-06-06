@@ -19,12 +19,12 @@ func RegexpMustCompile(str string) *regexp.Regexp {
 	defer regexpCache.Unlock()
 
 	if r, ok := regexpCache.cache[str]; ok {
-		return r
+		return r.Copy()
 	}
 
 	r := regexp.MustCompile(str)
 	regexpCache.cache[str] = r
-	return r
+	return r.Copy()
 }
 
 func RegexpCompile(str string) (*regexp.Regexp, error) {
@@ -32,13 +32,13 @@ func RegexpCompile(str string) (*regexp.Regexp, error) {
 	defer regexpCache.Unlock()
 
 	if r, ok := regexpCache.cache[str]; ok {
-		return r, nil
+		return r.Copy(), nil
 	}
 
 	if r, err := regexp.Compile(str); err == nil {
 		regexpCache.cache[str] = r
-		return r, err
+		return r.Copy(), err
 	} else {
-		return r, err
+		return nil, err
 	}
 }
