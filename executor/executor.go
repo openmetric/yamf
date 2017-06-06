@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	pb "github.com/go-graphite/carbonzipper/carbonzipperpb3"
 	"github.com/nsqio/go-nsq"
@@ -121,11 +122,12 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 
 	now := time.Now()
 
-	query = api.NewRenderQuery(api.NewQueryTarget(c.Query))
-	query.SetFrom(c.From).SetUntil(c.Until)
+	query = api.NewRenderQuery(c.GraphiteURL, c.From, c.Until, api.NewRenderTarget(c.Query))
 
-	w.logger.Debugf("Request URL: %s", query.URL(c.GraphiteURL, "json"))
-	resp, err = query.Request(c.GraphiteURL)
+	w.logger.Debugf("Request URL: %s", query.URL())
+	ctx, cancel := context.WithTimeout(context.TODO(), t.Timeout.Duration)
+	defer cancel()
+	resp, err = query.Request(ctx)
 	if err != nil {
 		w.logger.Errorf("Request to graphite server failed: %s", err)
 		return
