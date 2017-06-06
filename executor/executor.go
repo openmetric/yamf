@@ -6,7 +6,6 @@ import (
 	"github.com/nsqio/go-nsq"
 	api "github.com/openmetric/graphite-api-client"
 	"github.com/openmetric/yamf/internal/types"
-	"github.com/openmetric/yamf/internal/utils"
 	"github.com/openmetric/yamf/logging"
 	"net/http"
 	"time"
@@ -135,7 +134,7 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 	metrics := resp.MultiFetchResponse.Metrics
 	w.logger.Debugf("Get %d metrics in response", len(metrics))
 
-	metaExtractRegexp, _ := utils.CacheGetRegexp(c.MetaExtractPattern)
+	metaExtractRegexp, _ := types.RegexpCompile(c.MetadataExtractPattern)
 	for _, metric := range metrics {
 		result := &types.GraphiteCheckResult{
 			ScheduleTime:  t.Schedule,
