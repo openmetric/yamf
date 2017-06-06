@@ -160,12 +160,11 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 		// compare data
 		var isCritical, isWarning, isUnknown bool
 
-		v, t, isNull := getLastNonNullValue(metric, c.MaxNullPoints)
+		v, t, absent := getLastNonNullValue(metric, c.MaxNullPoints)
 		result.MetricTime = time.Unix(int64(t), 0)
 		result.MetricValue = v
 
-		criticalExpr := types.NewThresholdExpr(c.CriticalExpression)
-		isCritical, isUnknown = criticalExpr.Evaluate(v, isNull)
+		isCritical, isUnknown = c.CriticalExpression.Evaluate(v, absent)
 		if isUnknown {
 			// emit unknown event
 			event.Status = Unknown
@@ -178,8 +177,7 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 			continue
 		}
 
-		warningExpr := types.NewThresholdExpr(c.WarningExpression)
-		isWarning, isUnknown = warningExpr.Evaluate(v, isNull)
+		isWarning, isUnknown = c.WarningExpression.Evaluate(v, absent)
 		if isUnknown {
 			// emit unknown event
 			event.Status = Unknown
@@ -197,7 +195,7 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 	}
 }
 
-func getLastNonNullValue(m *pb.FetchResponse, allowedNullPoints int) (v float64, t int32, isNull bool) {
+func getLastNonNullValue(m *pb.FetchResponse, allowedNullPoints int) (v float64, t int32, absent bool) {
 	l := len(m.Values)
 	for i := 1; i <= allowedNullPoints && i <= l; i++ {
 		if m.IsAbsent[l-i] {
@@ -205,12 +203,12 @@ func getLastNonNullValue(m *pb.FetchResponse, allowedNullPoints int) (v float64,
 		}
 		v = m.Values[l-i]
 		t = m.StopTime - int32(i-1)*m.StepTime
-		isNull = false
-		return v, t, isNull
+		absent = false
+		return v, t, absent
 	}
 	// if we didn't return in the loop body, there were too many null points
 	v = 0
 	t = m.StopTime
-	isNull = true
-	return v, t, isNull
+	absent = true
+	return v, t, absent
 }

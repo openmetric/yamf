@@ -1,17 +1,22 @@
 package types
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
+	"sync"
+)
+
+// pattern used to parse threshold expression
+var ThresholdExpressionRegexp = regexp.MustCompile(
+	`^((?P<num_op>>|>=|==|<=|<|!=) *(?P<num_val>-?[0-9]+(\.[0-9]+)?)|(?P<nil_op>==|!=) *nil)$`,
 )
 
 // CheckDefinition is interface for check definitions
 type CheckDefinition interface {
 	Validate() error
 }
-
-var ThresholdExprRegexp = regexp.MustCompile(`^((?P<num_op>>|>=|==|<=|<|!=) *(?P<num_val>-?[0-9]+(\.[0-9]+)?)|(?P<nil_op>==|!=) *nil)$`)
 
 // GraphiteCheck queries data from graphite and performs check on returned data
 type GraphiteCheck struct {
@@ -37,8 +42,8 @@ type GraphiteCheck struct {
 	// nil but expression is not nil related, Unknown is yield.
 	// Evaluation order:
 	//  critical -> warning -> ok
-	CriticalExpression string `json:"critical_expression"`
-	WarningExpression  string `json:"warning_expression"`
+	CriticalExpression ThresholdExpression `json:"critical_expression"`
+	WarningExpression  ThresholdExpression `json:"warning_expression"`
 
 	// Usually, we use the last value in query result to compare threshold, however,
 	// sometimes, due to time drift or carbon's cache, the last value is null.
@@ -58,20 +63,9 @@ func (c *GraphiteCheck) Validate() error {
 	}
 
 	if c.MetadataExtractPattern != "" {
-		if _, err = regexp.Compile(c.MetadataExtractPattern); err != nil {
-			return fmt.Errorf("failed to compile `meta_extract_pattern` with error: %s", err)
+		if _, err = RegexpCompile(c.MetadataExtractPattern); err != nil {
+			return fmt.Errorf("failed to compile `metadata_extract_pattern` with error: %s", err)
 		}
-	}
-
-	if c.CriticalExpression != "" && !ThresholdExprRegexp.MatchString(c.CriticalExpression) {
-		return fmt.Errorf("Invalid `critical_expr`")
-	}
-	if c.WarningExpression != "" && !ThresholdExprRegexp.MatchString(c.WarningExpression) {
-		return fmt.Errorf("Invalid `warning_expr`")
-	}
-
-	if c.CriticalExpression == "" && c.WarningExpression == "" {
-		return fmt.Errorf("Must specify at least one threshold expression")
 	}
 
 	if c.MaxNullPoints < 0 {
@@ -81,23 +75,38 @@ func (c *GraphiteCheck) Validate() error {
 	return nil
 }
 
-type ThresholdExpr struct {
+type ThresholdExpression struct {
+	str         string
 	NumberOp    string
 	NumberValue float64
 	NullOp      string
 }
 
-var thresholdExprCache map[string]*ThresholdExpr = make(map[string]*ThresholdExpr)
+var thresholdExpressionCache = struct {
+	cache map[string]*ThresholdExpression
+	sync.RWMutex
+}{
+	cache: make(map[string]*ThresholdExpression),
+}
 
-func NewThresholdExpr(expr string) *ThresholdExpr {
-	if e, ok := thresholdExprCache[expr]; ok {
-		return e
+func NewThresholdExpression(str string) (*ThresholdExpression, error) {
+	thresholdExpressionCache.Lock()
+	defer thresholdExpressionCache.Unlock()
+
+	if e, ok := thresholdExpressionCache.cache[str]; ok {
+		return e, nil
 	}
 
-	e := &ThresholdExpr{}
+	if !ThresholdExpressionRegexp.MatchString(str) {
+		return nil, fmt.Errorf("Invalid expression: %s", str)
+	}
 
-	matches := ThresholdExprRegexp.FindStringSubmatch(expr)
-	names := ThresholdExprRegexp.SubexpNames()
+	e := &ThresholdExpression{
+		str: str,
+	}
+
+	matches := ThresholdExpressionRegexp.FindStringSubmatch(str)
+	names := ThresholdExpressionRegexp.SubexpNames()
 	for i, match := range matches {
 		switch names[i] {
 		case "num_op":
@@ -109,18 +118,18 @@ func NewThresholdExpr(expr string) *ThresholdExpr {
 		}
 	}
 
-	thresholdExprCache[expr] = e
-	return e
+	thresholdExpressionCache.cache[str] = e
+	return e, nil
 }
 
-func (t *ThresholdExpr) IsNulllComparer() bool {
+func (t *ThresholdExpression) IsNulllComparer() bool {
 	return t.NullOp != ""
 }
 
-func (t *ThresholdExpr) Evaluate(value float64, isNull bool) (result bool, unknown bool) {
+func (t *ThresholdExpression) Evaluate(value float64, absent bool) (result bool, unknown bool) {
 	if !t.IsNulllComparer() {
 		// if it's a number comparer, but data is null, the expression evaluate to false
-		if isNull {
+		if absent {
 			return false, true
 		}
 		switch t.NumberOp {
@@ -140,10 +149,30 @@ func (t *ThresholdExpr) Evaluate(value float64, isNull bool) (result bool, unkno
 	} else {
 		switch t.NullOp {
 		case "==":
-			return isNull, false
+			return absent, false
 		case "!=":
-			return !isNull, false
+			return !absent, false
 		}
 	}
 	return false, true
+}
+
+func (e *ThresholdExpression) MarshalJSON() ([]byte, error) {
+	return json.Marshal(e.str)
+}
+
+func (e *ThresholdExpression) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	if tmp, err := NewThresholdExpression(s); err != nil {
+		return err
+	} else {
+		e.str = tmp.str
+		e.NumberOp = tmp.NumberOp
+		e.NumberValue = tmp.NumberValue
+		e.NullOp = tmp.NullOp
+		return nil
+	}
 }
