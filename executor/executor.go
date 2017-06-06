@@ -160,11 +160,11 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 		// compare data
 		var isCritical, isWarning, isUnknown bool
 
-		v, t, isNull := getLastNonNullValue(metric, c.AllowedNullPoints)
+		v, t, isNull := getLastNonNullValue(metric, c.MaxNullPoints)
 		result.MetricTime = time.Unix(int64(t), 0)
 		result.MetricValue = v
 
-		criticalExpr := types.NewThresholdExpr(c.CriticalExpr)
+		criticalExpr := types.NewThresholdExpr(c.CriticalExpression)
 		isCritical, isUnknown = criticalExpr.Evaluate(v, isNull)
 		if isUnknown {
 			// emit unknown event
@@ -178,7 +178,7 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 			continue
 		}
 
-		warningExpr := types.NewThresholdExpr(c.WarningExpr)
+		warningExpr := types.NewThresholdExpr(c.WarningExpression)
 		isWarning, isUnknown = warningExpr.Evaluate(v, isNull)
 		if isUnknown {
 			// emit unknown event
