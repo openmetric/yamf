@@ -20,7 +20,7 @@ type Task struct {
 
 	RuleID int `json:"rule_id"` // the rule from which this task was generated
 
-	Check CheckDefinition `json:"check"` // check definition
+	Check Check `json:"check"` // check definition
 }
 
 func NewTaskFromRule(rule *Rule) *Task {

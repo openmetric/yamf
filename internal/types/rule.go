@@ -12,8 +12,8 @@ import (
 type Rule struct {
 	// `json` tag is for http api serialization, `structs` is for tiedot database serialization
 
-	Type  string          `json:"type" structs:"type"`
-	Check CheckDefinition `json:"check" structs:"check,omitnested"` // check definition
+	Type  string `json:"type" structs:"type"`
+	Check Check  `json:"check" structs:"check,omitnested"` // check definition
 
 	ID       int      `json:"id" structs:"-"`                     // database document id of the rule
 	Paused   bool     `json:"paused" structs:"paused"`            // whether to schedule check tasks

@@ -3,18 +3,15 @@ package types
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strconv"
 	"sync"
 )
 
 // pattern used to parse threshold expression
-var ThresholdExpressionRegexp = regexp.MustCompile(
-	`^((?P<num_op>>|>=|==|<=|<|!=) *(?P<num_val>-?[0-9]+(\.[0-9]+)?)|(?P<nil_op>==|!=) *nil)$`,
-)
+const ThresholdExpressionPattern = `^((?P<num_op>>|>=|==|<=|<|!=) *(?P<num_val>-?[0-9]+(\.[0-9]+)?)|(?P<nil_op>==|!=) *nil)$`
 
-// CheckDefinition is interface for check definitions
-type CheckDefinition interface {
+// Check is interface for check definitions
+type Check interface {
 	Validate() error
 }
 
@@ -82,6 +79,47 @@ type ThresholdExpression struct {
 	NullOp      string
 }
 
+func (e *ThresholdExpression) IsNulllComparer() bool {
+	return e.NullOp != ""
+}
+
+func (e *ThresholdExpression) IsNumberComparer() bool {
+	return e.NumberOp != ""
+}
+
+func (e *ThresholdExpression) Evaluate(value float64, absent bool) (result bool, unknown bool) {
+	switch {
+	case e.IsNumberComparer():
+		// if it's a number comparer, but data is null, the expression evaluate to false
+		if absent {
+			return false, true
+		}
+		switch e.NumberOp {
+		case ">":
+			return value > e.NumberValue, false
+		case ">=":
+			return value >= e.NumberValue, false
+		case "==":
+			return value == e.NumberValue, false
+		case "!=":
+			return value != e.NumberValue, false
+		case "<=":
+			return value <= e.NumberValue, false
+		case "<":
+			return value < e.NumberValue, false
+		}
+	case e.IsNulllComparer():
+		switch e.NullOp {
+		case "==":
+			return absent, false
+		case "!=":
+			return !absent, false
+		}
+	}
+	// we should never reach here
+	return false, true
+}
+
 var thresholdExpressionCache = struct {
 	cache map[string]*ThresholdExpression
 	sync.RWMutex
@@ -97,7 +135,8 @@ func NewThresholdExpression(str string) (*ThresholdExpression, error) {
 		return e, nil
 	}
 
-	if !ThresholdExpressionRegexp.MatchString(str) {
+	r := RegexpMustCompile(ThresholdExpressionPattern)
+	if !r.MatchString(str) {
 		return nil, fmt.Errorf("Invalid expression: %s", str)
 	}
 
@@ -105,8 +144,8 @@ func NewThresholdExpression(str string) (*ThresholdExpression, error) {
 		str: str,
 	}
 
-	matches := ThresholdExpressionRegexp.FindStringSubmatch(str)
-	names := ThresholdExpressionRegexp.SubexpNames()
+	matches := r.FindStringSubmatch(str)
+	names := r.SubexpNames()
 	for i, match := range matches {
 		switch names[i] {
 		case "num_op":
@@ -122,51 +161,16 @@ func NewThresholdExpression(str string) (*ThresholdExpression, error) {
 	return e, nil
 }
 
-func (t *ThresholdExpression) IsNulllComparer() bool {
-	return t.NullOp != ""
-}
-
-func (t *ThresholdExpression) Evaluate(value float64, absent bool) (result bool, unknown bool) {
-	if !t.IsNulllComparer() {
-		// if it's a number comparer, but data is null, the expression evaluate to false
-		if absent {
-			return false, true
-		}
-		switch t.NumberOp {
-		case ">":
-			return value > t.NumberValue, false
-		case ">=":
-			return value >= t.NumberValue, false
-		case "==":
-			return value == t.NumberValue, false
-		case "!=":
-			return value != t.NumberValue, false
-		case "<=":
-			return value <= t.NumberValue, false
-		case "<":
-			return value < t.NumberValue, false
-		}
-	} else {
-		switch t.NullOp {
-		case "==":
-			return absent, false
-		case "!=":
-			return !absent, false
-		}
-	}
-	return false, true
-}
-
 func (e *ThresholdExpression) MarshalJSON() ([]byte, error) {
 	return json.Marshal(e.str)
 }
 
 func (e *ThresholdExpression) UnmarshalJSON(data []byte) error {
-	var s string
-	if err := json.Unmarshal(data, &s); err != nil {
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
 		return err
 	}
-	if tmp, err := NewThresholdExpression(s); err != nil {
+	if tmp, err := NewThresholdExpression(str); err != nil {
 		return err
 	} else {
 		e.str = tmp.str
