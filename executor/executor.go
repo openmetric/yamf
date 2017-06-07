@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/nsqio/go-nsq"
 	api "github.com/openmetric/graphite-api-client"
@@ -9,13 +10,6 @@ import (
 	"github.com/openmetric/yamf/logging"
 	"net/http"
 	"time"
-)
-
-const (
-	OK       = 0
-	Warning  = 1
-	Critical = 2
-	Unknown  = 3
 )
 
 // Config of executor
@@ -56,7 +50,7 @@ func Run(config *Config) {
 			logger: logging.GetLogger(name, config.Log),
 
 			emit: func(e *types.Event) {
-				result, _ := e.Result.(*types.GraphiteCheckResult)
+				result, _ := e.Result.(*types.GraphiteResult)
 				logger.Debugf("Event, rule id: %d, status: %d, value: %v, metadata: %#v\n",
 					e.RuleID, e.Status, result.MetricValue, e.Metadata)
 			},
@@ -99,9 +93,9 @@ func (w *worker) Stop() {
 }
 
 func (w *worker) executeTask(message *nsq.Message) error {
-	var task *types.Task
 	var err error
-	if task, err = types.NewTaskFromJSON(message.Body); err != nil {
+	task := &types.Task{}
+	if err = json.Unmarshal(message.Body, task); err != nil {
 		w.logger.Errorf("failed to decode task from message, %s", err)
 	} else {
 		w.logger.Debugf("get task, rule id: %d", task.RuleID)
@@ -119,7 +113,7 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 	var resp *api.RenderResponse
 	var err error
 
-	now := time.Now()
+	//now := time.Now()
 
 	query = api.NewRenderQuery(c.GraphiteURL, c.From, c.Until, api.NewRenderTarget(c.Query))
 
@@ -137,10 +131,7 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 
 	metaExtractRegexp, _ := types.RegexpCompile(c.MetadataExtractPattern)
 	for _, metric := range metrics {
-		result := &types.GraphiteCheckResult{
-			ScheduleTime:  t.Schedule,
-			ExecutionTime: now,
-		}
+		result := &types.GraphiteResult{}
 		event := &types.Event{
 			Source:   "rule",
 			Type:     "graphite",
@@ -162,18 +153,18 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 		var isCritical, isWarning, isUnknown bool
 
 		v, t, absent := api.GetLastNonNullValue(metric, c.MaxNullPoints)
-		result.MetricTime = time.Unix(int64(t), 0)
+		result.MetricTimestamp = time.Unix(int64(t), 0)
 		result.MetricValue = v
 
 		isCritical, isUnknown = c.CriticalExpression.Evaluate(v, absent)
 		if isUnknown {
 			// emit unknown event
-			event.Status = Unknown
+			event.Status = types.Unknown
 			w.emit(event)
 			continue
 		} else if isCritical {
 			// emit critical event
-			event.Status = Critical
+			event.Status = types.Critical
 			w.emit(event)
 			continue
 		}
@@ -181,17 +172,17 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 		isWarning, isUnknown = c.WarningExpression.Evaluate(v, absent)
 		if isUnknown {
 			// emit unknown event
-			event.Status = Unknown
+			event.Status = types.Unknown
 			w.emit(event)
 			continue
 		} else if isWarning {
 			// emit warning event
-			event.Status = Warning
+			event.Status = types.Warning
 			w.emit(event)
 			continue
 		}
 
-		event.Status = OK
+		event.Status = types.OK
 		w.emit(event)
 	}
 }

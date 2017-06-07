@@ -39,3 +39,17 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 
 	return nil
 }
+
+func CopyMap(src map[string]interface{}) map[string]interface{} {
+	dst := make(map[string]interface{})
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func MergeMap(dst, src map[string]interface{}) {
+	for k, v := range src {
+		dst[k] = v
+	}
+}

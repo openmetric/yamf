@@ -11,61 +11,61 @@ import (
 // Rule defines a check and how to schedule check tasks.
 type Rule struct {
 	// `json` tag is for http api serialization, `structs` is for tiedot database serialization
+	Type                   string                 `json:"type" structs:"type"`
+	Check                  Check                  `json:"check" structs:"check,omitnested"`
+	Metadata               map[string]interface{} `json:"metadata" structs:"metadata"`
+	EventIdentifierPattern string                 `json:"event_identifier_pattern" structs:"event_identifier_pattern"`
 
-	Type  string `json:"type" structs:"type"`
-	Check Check  `json:"check" structs:"check,omitnested"` // check definition
+	// schedule information
+	Paused   bool     `json:"paused" structs:"paused"`
+	Interval Duration `json:"interval" structs:"interval,string"`
+	Timeout  Duration `json:"timeout" structs:"timeout,flatten"`
 
-	ID       int      `json:"id" structs:"-"`                     // database document id of the rule
-	Paused   bool     `json:"paused" structs:"paused"`            // whether to schedule check tasks
-	Interval Duration `json:"interval" structs:"interval,string"` // check interval
-	Timeout  Duration `json:"timeout" structs:"timeout,flatten"`  // max execution time of a single check, should be smaller than interval
-
-	Metadata map[string]interface{} `json:"metadata" structs:"metadata"`
+	// database id
+	ID int `json:"id" structs:"-"`
 }
 
-// NewRuleFromJSON unmarshals a json buffer into Rule object.
-// If resetID is true, the returned Rule object will have ID=0
-func NewRuleFromJSON(data []byte, resetID bool) (*Rule, error) {
+func (r *Rule) UnmarshalJSON(data []byte) error {
 	var err error
-	var holder = new(struct {
-		Rule
+
+	type Alias Rule
+	aux := &struct {
+		*Alias
 		Check json.RawMessage `json:"check"`
-	})
-
-	if err = json.Unmarshal(data, holder); err != nil {
-		return nil, err
+	}{
+		Alias: (*Alias)(r),
+	}
+	if err = json.Unmarshal(data, aux); err != nil {
+		return err
 	}
 
-	rule := &holder.Rule
-
-	switch rule.Type {
+	switch r.Type {
 	case "graphite":
-		rule.Check = new(GraphiteCheck)
+		r.Check = new(GraphiteCheck)
 	default:
-		return nil, fmt.Errorf("Unsupported type: %s", rule.Type)
+		return fmt.Errorf("Unsupported type: %s", r.Type)
 	}
-	if err = json.Unmarshal(holder.Check, rule.Check); err != nil {
-		return nil, err
-	}
-
-	if err = rule.Check.Validate(); err != nil {
-		return nil, err
+	if err = json.Unmarshal(aux.Check, r.Check); err != nil {
+		return err
 	}
 
-	if rule.Interval.Duration <= 0 {
-		return nil, fmt.Errorf("Invalid interval: %s", rule.Interval)
+	return nil
+}
+
+func (r *Rule) Validate() error {
+	if r.Interval.Duration <= 0 {
+		return fmt.Errorf("Invalid interval: %s", r.Interval)
 	}
 
-	// timeout must be less equal than interval
-	if rule.Timeout.Duration < rule.Interval.Duration {
-		rule.Timeout = rule.Interval
+	if r.Timeout.Duration < r.Interval.Duration {
+		return fmt.Errorf("Timeout must be less-equal than Interval")
 	}
 
-	if resetID {
-		rule.ID = 0
+	if err := r.Check.Validate(); err != nil {
+		return err
 	}
 
-	return rule, nil
+	return nil
 }
 
 // Map wraps fatih/structs.Map, returns map[string]interface{} of the Rule struct
@@ -106,11 +106,11 @@ func (rdb *RuleDB) GetAll() ([]*Rule, error) {
 	rules := make([]*Rule, 0)
 
 	rdb.col.ForEachDoc(func(id int, doc []byte) (moveOn bool) {
-		var rule *Rule
+		rule := &Rule{}
 		var err error
 
-		if rule, err = NewRuleFromJSON(doc, true); err != nil {
-			// TODO check error and move on
+		if err = json.Unmarshal(doc, &rule); err != nil {
+			// TODO log error
 			return true
 		}
 
@@ -129,7 +129,7 @@ func (rdb *RuleDB) Get(id int) (*Rule, error) {
 		return nil, fmt.Errorf("query on closed db")
 	}
 
-	var rule *Rule
+	rule := &Rule{}
 	var doc map[string]interface{}
 	var docB []byte
 	var err error
@@ -146,7 +146,7 @@ func (rdb *RuleDB) Get(id int) (*Rule, error) {
 		return nil, err
 	}
 
-	if rule, err = NewRuleFromJSON(docB, false); err != nil {
+	if err = json.Unmarshal(docB, rule); err != nil {
 		return nil, err
 	}
 
