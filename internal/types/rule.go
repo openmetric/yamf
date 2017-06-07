@@ -19,7 +19,7 @@ type Rule struct {
 	// schedule information
 	Paused   bool     `json:"paused" structs:"paused"`
 	Interval Duration `json:"interval" structs:"interval,string"`
-	Timeout  Duration `json:"timeout" structs:"timeout,flatten"`
+	Timeout  Duration `json:"timeout" structs:"timeout,string"`
 
 	// database id
 	ID int `json:"id" structs:"-"`

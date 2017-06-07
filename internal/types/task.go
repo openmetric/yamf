@@ -16,7 +16,7 @@ type Task struct {
 
 	// execution instructions
 	Schedule   time.Time `json:"schedule"`   // when the task was scheduled (emitted from scheduler)
-	Timeout    Duration  `json:"duration"`   // how long should the task execution take at most
+	Timeout    Duration  `json:"timeout"`    // how long should the task execution take at most
 	Expiration time.Time `json:"expiration"` // if now is beyond expiration, the task should not be executed
 
 	RuleID int `json:"rule_id"` // the rule from which this task was generated

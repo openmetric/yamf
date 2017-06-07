@@ -1,6 +1,10 @@
 package types
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,14 +19,10 @@ type Event struct {
 	// source of this event, "rule", "snmptrap", "push" ...
 	Source string `json:"source"`
 
-	// Event status: 0-OK, 1-Warning, 2-Critical, 3-Unknown
-	Status int `json:"status"`
 	// When the event was emitted
 	Timestamp time.Time `json:"timestamp"`
-	// extra description text
-	Description string `json:"description"`
-	// Event identifier
-	Identifier string `json:"identifier"`
+
+	IdentifierTemplate *IdentifierTemplate `json:"-"`
 
 	// if the event is emitted by a rule, these fields are copied from rule
 	Type   string `json:"type,omitempty"`
@@ -43,11 +43,85 @@ func NewEvent(source string) *Event {
 	return event
 }
 
+func (e *Event) MarshalJSON() ([]byte, error) {
+	type Alias Event
+	aux := &struct {
+		*Alias
+		Status      int    `json:"status"`
+		Description string `json:"description"`
+		Identifier  string `json:"identifier"`
+	}{
+		Alias:       (*Alias)(e),
+		Status:      e.Result.GetStatus(),
+		Description: e.Result.GetDescription(),
+	}
+
+	if e.IdentifierTemplate != nil {
+		var err error
+		if aux.Identifier, err = e.IdentifierTemplate.Parse(e.Metadata); err != nil {
+			return nil, err
+		}
+	}
+
+	return json.Marshal(aux)
+}
+
 func (e *Event) SetResult(r Result) {
+	MergeMap(e.Metadata, r.GetMetadata())
 	e.Result = r
-	e.Status = r.GetStatus()
-	e.Description = r.GetDescription()
-	MergeMap(r.GetMetadata(), e.Metadata)
+}
+
+type IdentifierTemplate struct {
+	pattern string
+	subs    map[string]bool
+}
+
+var subsCache = struct {
+	cache map[string]map[string]bool
+	sync.RWMutex
+}{
+	cache: make(map[string]map[string]bool),
+}
+
+func NewIdentifierTemplate(pattern string) *IdentifierTemplate {
+	subsCache.Lock()
+	defer subsCache.Unlock()
+
+	if subs, ok := subsCache.cache[pattern]; ok {
+		return &IdentifierTemplate{
+			pattern: pattern,
+			subs:    subs,
+		}
+	}
+
+	re := RegexpMustCompile("{([^}]+)}")
+	matches := re.FindAllStringSubmatch(pattern, -1)
+	subs := make(map[string]bool)
+
+	for _, match := range matches {
+		subs[match[1]] = true
+	}
+
+	subsCache.cache[pattern] = subs
+
+	return &IdentifierTemplate{
+		pattern: pattern,
+		subs:    subs,
+	}
+}
+
+func (i *IdentifierTemplate) Parse(metadata map[string]interface{}) (string, error) {
+	// TODO optomize
+	// TODO check for possible errors, e.g. key does not exist in metadata
+	var target = i.pattern
+	for sub, _ := range i.subs {
+		var val string
+		if v, ok := metadata[sub]; ok {
+			val = fmt.Sprintf("%v", v)
+			target = strings.Replace(target, "{"+sub+"}", val, -1)
+		}
+	}
+	return target, nil
 }
 
 type Result interface {
@@ -77,8 +151,4 @@ func (r *GraphiteResult) GetMetadata() map[string]interface{} {
 
 func (r *GraphiteResult) GetDescription() string {
 	return ""
-}
-
-// message of snmptrap
-type SNMPTrapResult struct {
 }

@@ -50,9 +50,9 @@ func Run(config *Config) {
 			logger: logging.GetLogger(name, config.Log),
 
 			emit: func(e *types.Event) {
-				result, _ := e.Result.(*types.GraphiteResult)
-				logger.Debugf("Event, rule id: %d, status: %d, value: %v, metadata: %#v\n",
-					e.RuleID, e.Status, result.MetricValue, e.Metadata)
+				//result, _ := e.Result.(*types.GraphiteResult)
+				b, _ := json.Marshal(e)
+				logger.Debugf(string(b))
 			},
 
 			stop: make(chan struct{}),
@@ -113,7 +113,7 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 	var resp *api.RenderResponse
 	var err error
 
-	//now := time.Now()
+	now := time.Now()
 
 	query = api.NewRenderQuery(c.GraphiteURL, c.From, c.Until, api.NewRenderTarget(c.Query))
 
@@ -131,21 +131,23 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 
 	metaExtractRegexp, _ := types.RegexpCompile(c.MetadataExtractPattern)
 	for _, metric := range metrics {
-		result := &types.GraphiteResult{}
-		event := &types.Event{
-			Source:   "rule",
-			Type:     "graphite",
-			RuleID:   t.RuleID,
-			Metadata: t.Metadata,
-			Result:   result,
+		result := &types.GraphiteResult{
+			MetricName: metric.GetName(),
+			Metadata:   make(map[string]interface{}),
 		}
+		event := types.NewEvent("rule")
+		event.Type = "graphite"
+		event.RuleID = t.RuleID
+		event.Metadata = t.Metadata
+		event.Timestamp = now
+		event.IdentifierTemplate = types.NewIdentifierTemplate(t.EventIdentifierPattern)
 
 		// extract meta data
 		matches := metaExtractRegexp.FindStringSubmatch(metric.Name)
 		names := metaExtractRegexp.SubexpNames()
 		for i, match := range matches {
 			if i != 0 && names[i] != "" {
-				event.Metadata[names[i]] = match
+				result.Metadata[names[i]] = match
 			}
 		}
 
@@ -159,12 +161,14 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 		isCritical, isUnknown = c.CriticalExpression.Evaluate(v, absent)
 		if isUnknown {
 			// emit unknown event
-			event.Status = types.Unknown
+			result.Status = types.Unknown
+			event.SetResult(result)
 			w.emit(event)
 			continue
 		} else if isCritical {
 			// emit critical event
-			event.Status = types.Critical
+			result.Status = types.Critical
+			event.SetResult(result)
 			w.emit(event)
 			continue
 		}
@@ -172,17 +176,20 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 		isWarning, isUnknown = c.WarningExpression.Evaluate(v, absent)
 		if isUnknown {
 			// emit unknown event
-			event.Status = types.Unknown
+			result.Status = types.Unknown
+			event.SetResult(result)
 			w.emit(event)
 			continue
 		} else if isWarning {
 			// emit warning event
-			event.Status = types.Warning
+			result.Status = types.Warning
+			event.SetResult(result)
 			w.emit(event)
 			continue
 		}
 
-		event.Status = types.OK
+		result.Status = types.OK
+		event.SetResult(result)
 		w.emit(event)
 	}
 }
