@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"sync"
 )
 
 // pattern used to parse threshold expression
@@ -120,45 +119,40 @@ func (e *ThresholdExpression) Evaluate(value float64, absent bool) (result bool,
 	return false, true
 }
 
-var thresholdExpressionCache = struct {
-	cache map[string]*ThresholdExpression
-	sync.RWMutex
-}{
-	cache: make(map[string]*ThresholdExpression),
-}
+var thresholdExpressionCache = NewGenericCache(
+	func(str interface{}) (interface{}, error) {
+		r := RegexpMustCompile(ThresholdExpressionPattern)
+		if !r.MatchString(str.(string)) {
+			return nil, fmt.Errorf("Invalid expression: %s", str)
+		}
+
+		e := &ThresholdExpression{
+			str: str.(string),
+		}
+
+		matches := r.FindStringSubmatch(str.(string))
+		names := r.SubexpNames()
+		for i, match := range matches {
+			switch names[i] {
+			case "num_op":
+				e.NumberOp = match
+			case "num_val":
+				e.NumberValue, _ = strconv.ParseFloat(match, 64)
+			case "nil_op":
+				e.NullOp = match
+			}
+		}
+
+		return e, nil
+	},
+)
 
 func NewThresholdExpression(str string) (*ThresholdExpression, error) {
-	thresholdExpressionCache.Lock()
-	defer thresholdExpressionCache.Unlock()
-
-	if e, ok := thresholdExpressionCache.cache[str]; ok {
-		return e, nil
+	if e, err := thresholdExpressionCache.GetOrCreate(str); err != nil {
+		return nil, err
+	} else {
+		return e.(*ThresholdExpression), err
 	}
-
-	r := RegexpMustCompile(ThresholdExpressionPattern)
-	if !r.MatchString(str) {
-		return nil, fmt.Errorf("Invalid expression: %s", str)
-	}
-
-	e := &ThresholdExpression{
-		str: str,
-	}
-
-	matches := r.FindStringSubmatch(str)
-	names := r.SubexpNames()
-	for i, match := range matches {
-		switch names[i] {
-		case "num_op":
-			e.NumberOp = match
-		case "num_val":
-			e.NumberValue, _ = strconv.ParseFloat(match, 64)
-		case "nil_op":
-			e.NullOp = match
-		}
-	}
-
-	thresholdExpressionCache.cache[str] = e
-	return e, nil
 }
 
 func (e *ThresholdExpression) MarshalJSON() ([]byte, error) {

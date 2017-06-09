@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -76,37 +75,25 @@ type IdentifierTemplate struct {
 	subs    map[string]bool
 }
 
-var subsCache = struct {
-	cache map[string]map[string]bool
-	sync.RWMutex
-}{
-	cache: make(map[string]map[string]bool),
-}
+var subsCache = NewGenericCache(
+	func(pattern interface{}) (interface{}, error) {
+		re := RegexpMustCompile("{([^}]+)}")
+		matches := re.FindAllStringSubmatch(pattern.(string), -1)
+		subs := make(map[string]bool)
+
+		for _, match := range matches {
+			subs[match[1]] = true
+		}
+
+		return subs, nil
+	},
+)
 
 func NewIdentifierTemplate(pattern string) *IdentifierTemplate {
-	subsCache.Lock()
-	defer subsCache.Unlock()
-
-	if subs, ok := subsCache.cache[pattern]; ok {
-		return &IdentifierTemplate{
-			pattern: pattern,
-			subs:    subs,
-		}
-	}
-
-	re := RegexpMustCompile("{([^}]+)}")
-	matches := re.FindAllStringSubmatch(pattern, -1)
-	subs := make(map[string]bool)
-
-	for _, match := range matches {
-		subs[match[1]] = true
-	}
-
-	subsCache.cache[pattern] = subs
-
+	subs, _ := subsCache.GetOrCreate(pattern)
 	return &IdentifierTemplate{
 		pattern: pattern,
-		subs:    subs,
+		subs:    subs.(map[string]bool),
 	}
 }
 

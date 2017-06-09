@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
 )
 
@@ -52,4 +53,34 @@ func MergeMap(dst, src map[string]interface{}) {
 	for k, v := range src {
 		dst[k] = v
 	}
+}
+
+type GenericCache struct {
+	cache  map[interface{}]interface{}
+	create CacheObjectCreateFunc
+	sync.RWMutex
+}
+
+type CacheObjectCreateFunc func(interface{}) (interface{}, error)
+
+func NewGenericCache(create CacheObjectCreateFunc) *GenericCache {
+	cache := &GenericCache{
+		cache:  make(map[interface{}]interface{}),
+		create: create,
+	}
+	return cache
+}
+
+func (c *GenericCache) GetOrCreate(k interface{}) (v interface{}, err error) {
+	c.Lock()
+	defer c.Unlock()
+
+	if v, ok := c.cache[k]; ok {
+		return v, nil
+	}
+
+	if v, err = c.create(k); err == nil {
+		c.cache[k] = v
+	}
+	return v, err
 }
