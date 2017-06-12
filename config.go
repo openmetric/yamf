@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/openmetric/yamf/executor"
 	"github.com/openmetric/yamf/logging"
 	"github.com/openmetric/yamf/scheduler"
 	"gopkg.in/yaml.v2"
@@ -13,6 +14,7 @@ import (
 type Config struct {
 	Log       *logging.LoggerConfig `yaml:"log"` // global logger
 	Scheduler *scheduler.Config     `yaml:"scheduler"`
+	Executor  *executor.Config      `yaml:"executor"`
 }
 
 // NewConfig returns a default option values
@@ -25,6 +27,11 @@ func NewConfig() *Config {
 			DBPath:          "./var/db",
 			HTTPLogFilename: "./var/log/http.log",
 			Log:             logging.NewLoggerConfig(),
+		},
+
+		Executor: &executor.Config{
+			NumWorkers: 4,
+			Log:        logging.NewLoggerConfig(),
 		},
 	}
 

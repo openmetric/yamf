@@ -3,67 +3,127 @@ package types
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
 // Task is a scheduled check task.
 type Task struct {
-	// type of the task graphite, elasticsearch, ...
-	Type string `json:"type"`
+	// fields copied from rule as is
+	Type                   string              `json:"type"`
+	Check                  Check               `json:"check"`
+	Metadata               Metadata            `json:"metadata"`
+	EventIdentifierPattern *IdentifierTemplate `json:"event_identifier_pattern"`
 
-	Schedule   time.Time `json:"schedule"`   // when the task was scheduled (emitted from scheduler)
-	Timeout    Duration  `json:"duration"`   // how long should the task execution take at most
-	Expiration time.Time `json:"expiration"` // if now is beyond expiration, the task should not be executed
+	// execution instructions
+	Schedule   Time     `json:"schedule"`   // when the task was scheduled (emitted from scheduler)
+	Timeout    Duration `json:"timeout"`    // how long should the task execution take at most
+	Expiration Time     `json:"expiration"` // if now is beyond expiration, the task should not be executed
 
-	// hold data passed from rule, and attach more data after execution if any
-	Metadata map[string]interface{} `json:"metadata"`
-
-	RuleID int // the rule from which this task was generated
-
-	Check CheckDefinition `json:"check"` // check definition
+	RuleID int `json:"rule_id"` // the rule from which this task was generated
 }
 
-func NewTaskFromRule(rule *Rule) *Task {
+func NewTaskFromRule(r *Rule) *Task {
 	now := time.Now()
 	task := &Task{
-		Type:       rule.Type,
-		Check:      rule.Check,
-		Schedule:   now,
-		Timeout:    rule.Timeout,
-		Expiration: now.Add(rule.Timeout.Duration),
-		Metadata:   rule.Metadata,
-		RuleID:     rule.ID,
+		RuleID: r.ID,
+
+		Type:                   r.Type,
+		Check:                  r.Check,
+		Metadata:               r.Metadata,
+		EventIdentifierPattern: NewIdentifierTemplate(r.EventIdentifierPattern),
+
+		Schedule:   FromTime(now),
+		Timeout:    r.Timeout,
+		Expiration: FromTime(now.Add(r.Timeout.Duration)),
 	}
 	return task
 }
 
-// NewTaskFromJSON unmarshals a json buffer into Task object.
-func NewTaskFromJSON(data []byte) (*Task, error) {
+func (t *Task) UnmarshalJSON(data []byte) error {
 	var err error
-	var holder = new(struct {
-		Task
+
+	type Alias Task
+	aux := &struct {
+		*Alias
 		Check json.RawMessage `json:"check"`
-	})
-
-	if err = json.Unmarshal(data, holder); err != nil {
-		return nil, err
+	}{
+		Alias: (*Alias)(t),
 	}
 
-	task := &holder.Task
+	if err = json.Unmarshal(data, aux); err != nil {
+		return err
+	}
 
-	switch task.Type {
+	switch t.Type {
 	case "graphite":
-		task.Check = new(GraphiteCheck)
+		t.Check = new(GraphiteCheck)
 	default:
-		return nil, fmt.Errorf("Unsupported type: %s", task.Type)
+		return fmt.Errorf("Unsupported type: %s", t.Type)
 	}
-	if err = json.Unmarshal(holder.Check, task.Check); err != nil {
-		return nil, err
-	}
-
-	if err = task.Check.Validate(); err != nil {
-		return nil, err
+	if err = json.Unmarshal(aux.Check, t.Check); err != nil {
+		return err
 	}
 
-	return task, nil
+	return nil
+}
+
+type IdentifierTemplate struct {
+	pattern  string
+	subNames map[string]bool
+}
+
+var identifierTemplateCache = NewGenericCache(
+	func(pattern interface{}) (interface{}, error) {
+		re := RegexpMustCompile("{([^}]+)}")
+		matches := re.FindAllStringSubmatch(pattern.(string), -1)
+		subNames := make(map[string]bool)
+
+		for _, match := range matches {
+			subNames[match[1]] = true
+		}
+
+		t := &IdentifierTemplate{
+			pattern:  pattern.(string),
+			subNames: subNames,
+		}
+
+		return t, nil
+	},
+)
+
+func NewIdentifierTemplate(pattern string) *IdentifierTemplate {
+	t, _ := identifierTemplateCache.GetOrCreate(pattern)
+	return t.(*IdentifierTemplate)
+}
+
+func (t *IdentifierTemplate) Parse(metadata Metadata) (string, error) {
+	// TODO optomize
+	// TODO check for possible errors, e.g. key does not exist in metadata
+	var target = t.pattern
+
+	for subname, _ := range t.subNames {
+		var val string
+		if v, ok := metadata[subname]; ok {
+			val = fmt.Sprintf("%v", v)
+			target = strings.Replace(target, "{"+subname+"}", val, -1)
+		}
+	}
+	return target, nil
+}
+
+func (t *IdentifierTemplate) MarshalJSON() ([]byte, error) {
+	return json.Marshal(t.pattern)
+}
+
+func (t *IdentifierTemplate) UnmarshalJSON(data []byte) error {
+	var pattern string
+	if err := json.Unmarshal(data, &pattern); err != nil {
+		return err
+	}
+
+	tmp := NewIdentifierTemplate(pattern)
+	t.pattern = tmp.pattern
+	t.subNames = tmp.subNames
+	return nil
 }

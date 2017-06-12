@@ -5,11 +5,14 @@ import (
 	"github.com/op/go-logging"
 	"os"
 	"strings"
+	"sync"
 )
 
 // common logging setup shared by scheduler and executors
 
 const defaultFormat string = `[%{time:15:04:05.000}][%{module}][%{level}] %{message}`
+
+var fileManager = newLogFileManager()
 
 // Logger wraps logging.Logger so that other code does not need to import op/go-logging
 type Logger struct {
@@ -33,6 +36,31 @@ func NewLoggerConfig() *LoggerConfig {
 	}
 }
 
+type logFileManager struct {
+	opened map[string]*os.File
+	sync.RWMutex
+}
+
+func newLogFileManager() *logFileManager {
+	return &logFileManager{
+		opened: make(map[string]*os.File),
+	}
+}
+
+func (m *logFileManager) OpenFile(filename string) (*os.File, error) {
+	if f, ok := m.opened[filename]; ok {
+		return f, nil
+	}
+	m.Lock()
+	defer m.Unlock()
+	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+	if err != nil {
+		return nil, err
+	}
+	m.opened[filename] = file
+	return file, nil
+}
+
 // GetLogger creates a logger
 func GetLogger(module string, config *LoggerConfig) *Logger {
 	format := config.Format
@@ -41,7 +69,7 @@ func GetLogger(module string, config *LoggerConfig) *Logger {
 	}
 	formatter := logging.MustStringFormatter(format)
 
-	logFile, err := os.OpenFile(config.Filename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+	logFile, err := fileManager.OpenFile(config.Filename)
 	if err != nil {
 		fmt.Println("Failed to open logfile:", err)
 		os.Exit(1)

@@ -16,7 +16,7 @@ type Config struct {
 	ListenAddr      string                `yaml:"listen_addr"`
 	DBPath          string                `yaml:"db_path"`
 	NSQDTcpAddr     string                `yaml:"nsqd_tcp_address"`
-	NSQDTopic       string                `yaml:"nsqd_topic"`
+	NSQTopic        string                `yaml:"nsq_topic"`
 	Log             *logging.LoggerConfig `yaml:"log"`
 	HTTPLogFilename string                `yaml:"http_log_filename"`
 }
@@ -69,7 +69,7 @@ func Run(config *Config) {
 		}
 	}
 
-	w.runAPIServer()
+	go w.runAPIServer()
 }
 
 type ruleScheduler struct {
@@ -136,6 +136,6 @@ func (w *worker) publish(t *types.Task) {
 	if data, err := json.Marshal(t); err != nil {
 		w.logger.Error("Failed to marshal task into json")
 	} else {
-		w.producer.Publish(w.config.NSQDTopic, data)
+		w.producer.Publish(w.config.NSQTopic, data)
 	}
 }

@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/openmetric/yamf/internal/types"
 	"gopkg.in/gin-gonic/gin.v1"
@@ -63,7 +64,6 @@ func (w *worker) apiListRules(c *gin.Context) {
 
 func (w *worker) apiCreateRule(c *gin.Context) {
 	var body []byte
-	var rule *types.Rule
 	var err error
 
 	if body, err = ioutil.ReadAll(c.Request.Body); err != nil {
@@ -71,9 +71,14 @@ func (w *worker) apiCreateRule(c *gin.Context) {
 		return
 	}
 
-	if rule, err = types.NewRuleFromJSON(body, true); err != nil {
+	rule := &types.Rule{}
+	if err = json.Unmarshal(body, rule); err != nil {
 		apiWriteFail(c, 400, "Error parsing body, err: %s", err)
-		return
+	}
+	// force reset rule.ID to 0, user should not provide an ID
+	rule.ID = 0
+	if err = rule.Validate(); err != nil {
+		apiWriteFail(c, 400, "Invalid rule: %s", err)
 	}
 
 	if _, err = w.rdb.Insert(rule); err != nil {
@@ -110,9 +115,14 @@ func (w *worker) apiUpdateRule(c *gin.Context) {
 		return
 	}
 
-	if rule, err = types.NewRuleFromJSON(body, true); err != nil {
+	rule = &types.Rule{}
+	if err = json.Unmarshal(body, rule); err != nil {
 		apiWriteFail(c, 400, "Error parsing body, err: %s", err)
-		return
+	}
+	// force reset rule.ID to 0, user should not provide an ID
+	rule.ID = 0
+	if err = rule.Validate(); err != nil {
+		apiWriteFail(c, 400, "Invalid rule: %s", err)
 	}
 
 	if err = w.rdb.Update(id, rule); err != nil {
@@ -170,6 +180,7 @@ func (w *worker) runAPIServer() {
 	v1.POST("/rules", w.apiCreateRule)
 	v1.GET("/rules/:id", w.apiGetRule)
 	v1.PUT("/rules/:id", w.apiUpdateRule)
+	v1.PATCH("/rules/:id", w.apiUpdateRule)
 	v1.DELETE("/rules/:id", w.apiDeleteRule)
 
 	router.NoRoute(func(c *gin.Context) { apiWriteFail(c, 404, "no such endpoint") })

@@ -3,9 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/openmetric/yamf/executor"
 	"github.com/openmetric/yamf/logging"
 	"github.com/openmetric/yamf/scheduler"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
@@ -22,10 +25,28 @@ func main() {
 		logger.Info("Starting scheduler")
 		scheduler.Run(config.Scheduler)
 	case "executor":
-		fmt.Println("Executor not implemented")
-		os.Exit(1)
+		fmt.Println("Running as executor")
+		logger.Info("Starting executor")
+		executor.Run(config.Executor)
 	default:
 		fmt.Println("You must specify a valid mode with `-mode` option")
 		os.Exit(1)
+	}
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+
+	for {
+		select {
+		case <-c:
+			logger.Info("Got stop signal, stopping...")
+			switch *mode {
+			case "scheduler":
+				//scheduler.Stop()
+			case "executor":
+				executor.Stop()
+			}
+			return
+		}
 	}
 }
