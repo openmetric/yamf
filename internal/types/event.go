@@ -10,6 +10,7 @@ const (
 )
 
 type Event struct {
+	Type        string `json:"type"`
 	Source      string `json:"source"`
 	Timestamp   Time
 	Status      int      `json:"status"`
@@ -17,7 +18,6 @@ type Event struct {
 	Description string   `json:"description"`
 	Metadata    Metadata `json:"metadata"`
 
-	RuleType string `json:"rule_type,omitempty"`
-	RuleID   int    `json:"rule_id,omitempty"`
-	Result   Result `json:"result"`
+	RuleID int    `json:"rule_id,omitempty"`
+	Result Result `json:"result"`
 }

@@ -29,8 +29,6 @@ type worker struct {
 	consumer   *nsq.Consumer
 	httpclient *http.Client
 
-	emit func(*types.Event)
-
 	stop chan struct{}
 }
 
@@ -48,12 +46,6 @@ func Run(config *Config) {
 			config: config,
 			id:     i,
 			logger: logging.GetLogger(name, config.Log),
-
-			emit: func(e *types.Event) {
-				//result, _ := e.Result.(*types.GraphiteResult)
-				b, _ := json.Marshal(e)
-				logger.Debugf(string(b))
-			},
 
 			stop: make(chan struct{}),
 		}
@@ -179,17 +171,24 @@ func (w *worker) executeGraphiteCheck(t *types.Task, c *types.GraphiteCheck) {
 	EMIT:
 		event := &types.Event{
 			Source:      "rule",
+			Type:        "graphite",
 			Timestamp:   types.FromTime(time.Now()),
 			Status:      result.Status,
 			Description: "",
 			Metadata:    t.Metadata.Copy(),
 
-			RuleType: t.Type,
-			RuleID:   t.RuleID,
-			Result:   result,
+			RuleID: t.RuleID,
+			Result: result,
 		}
 		event.Metadata.Merge(result.Metadata)
 		event.Identifier, _ = t.EventIdentifierPattern.Parse(event.Metadata)
 		w.emit(event)
 	}
+}
+
+func (w *worker) emit(e *types.Event) {
+	r := e.Result.(*types.GraphiteResult)
+	w.logger.Debugf("[%s][%v] %d, Value: %f (isAbsent: %t)",
+		e.Identifier, e.Timestamp, e.Status, r.MetricValue, r.MetricValueAbsent,
+	)
 }
