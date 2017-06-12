@@ -11,10 +11,10 @@ import (
 // Rule defines a check and how to schedule check tasks.
 type Rule struct {
 	// `json` tag is for http api serialization, `structs` is for tiedot database serialization
-	Type                   string                 `json:"type" structs:"type"`
-	Check                  Check                  `json:"check" structs:"check,omitnested"`
-	Metadata               map[string]interface{} `json:"metadata" structs:"metadata"`
-	EventIdentifierPattern string                 `json:"event_identifier_pattern" structs:"event_identifier_pattern"`
+	Type                   string   `json:"type" structs:"type"`
+	Check                  Check    `json:"check" structs:"check,omitnested"`
+	Metadata               Metadata `json:"metadata" structs:"metadata"`
+	EventIdentifierPattern string   `json:"event_identifier_pattern" structs:"event_identifier_pattern"`
 
 	// schedule information
 	Paused   bool     `json:"paused" structs:"paused"`

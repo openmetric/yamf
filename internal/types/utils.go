@@ -41,6 +41,34 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Time is a wrapper around time.Time which implements json.Unmarshaler and json.Marshaler.
+// It marshals and unmarshals the time as unix timestamp.
+type Time struct {
+	time.Time
+}
+
+// FromTime is a convenience factory to create a Time instance from the given time.Time value.
+func FromTime(t time.Time) Time {
+	return Time{t}
+}
+
+// MarshalJSON implements the json.Marshaler interface.
+func (t Time) MarshalJSON() ([]byte, error) {
+	return json.Marshal(t.Unix())
+}
+
+// UnmarshalJSON implements the json.Unmarshaler interface.
+func (t *Time) UnmarshalJSON(data []byte) error {
+	var i int64
+	if err := json.Unmarshal(data, &i); err != nil {
+		return err
+	}
+
+	t.Time = time.Unix(i, 0)
+
+	return nil
+}
+
 func CopyMap(src map[string]interface{}) map[string]interface{} {
 	dst := make(map[string]interface{})
 	for k, v := range src {

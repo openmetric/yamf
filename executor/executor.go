@@ -102,18 +102,23 @@ func (w *worker) executeTask(message *nsq.Message) error {
 
 		switch c := task.Check.(type) {
 		case *types.GraphiteCheck:
-			w.executeGraphiteCheck(c, task)
+			w.executeGraphiteCheck(task, c)
 		}
 	}
 	return nil
 }
 
-func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
+func (w *worker) executeGraphiteCheck(t *types.Task, c *types.GraphiteCheck) {
 	var query *api.RenderQuery
 	var resp *api.RenderResponse
 	var err error
 
 	now := time.Now()
+	if now.After(t.Expiration.Time) {
+		w.logger.Warning("Expired task, RuleID: %d, Schedule Time: %v, Timeout: %s, Now: %v",
+			t.RuleID, t.Schedule, t.Timeout, now)
+		return
+	}
 
 	query = api.NewRenderQuery(c.GraphiteURL, c.From, c.Until, api.NewRenderTarget(c.Query))
 
@@ -131,16 +136,8 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 
 	metaExtractRegexp, _ := types.RegexpCompile(c.MetadataExtractPattern)
 	for _, metric := range metrics {
-		result := &types.GraphiteResult{
-			MetricName: metric.GetName(),
-			Metadata:   make(map[string]interface{}),
-		}
-		event := types.NewEvent("rule")
-		event.Type = "graphite"
-		event.RuleID = t.RuleID
-		event.Metadata = t.Metadata
-		event.Timestamp = now
-		event.IdentifierTemplate = types.NewIdentifierTemplate(t.EventIdentifierPattern)
+		result := types.NewGraphiteResult()
+		result.CheckTimestamp = types.FromTime(now)
 
 		// extract meta data
 		matches := metaExtractRegexp.FindStringSubmatch(metric.Name)
@@ -154,42 +151,45 @@ func (w *worker) executeGraphiteCheck(c *types.GraphiteCheck, t *types.Task) {
 		// compare data
 		var isCritical, isWarning, isUnknown bool
 
-		v, t, absent := api.GetLastNonNullValue(metric, c.MaxNullPoints)
-		result.MetricTimestamp = time.Unix(int64(t), 0)
+		v, ts, absent := api.GetLastNonNullValue(metric, c.MaxNullPoints)
+		result.MetricTimestamp = types.FromTime(time.Unix(int64(ts), 0))
 		result.MetricValue = v
+		result.MetricValueAbsent = absent
 
 		isCritical, isUnknown = c.CriticalExpression.Evaluate(v, absent)
 		if isUnknown {
-			// emit unknown event
 			result.Status = types.Unknown
-			event.SetResult(result)
-			w.emit(event)
-			continue
+			goto EMIT
 		} else if isCritical {
-			// emit critical event
 			result.Status = types.Critical
-			event.SetResult(result)
-			w.emit(event)
-			continue
+			goto EMIT
 		}
 
 		isWarning, isUnknown = c.WarningExpression.Evaluate(v, absent)
 		if isUnknown {
 			// emit unknown event
 			result.Status = types.Unknown
-			event.SetResult(result)
-			w.emit(event)
-			continue
+			goto EMIT
 		} else if isWarning {
 			// emit warning event
 			result.Status = types.Warning
-			event.SetResult(result)
-			w.emit(event)
-			continue
+			goto EMIT
 		}
 
-		result.Status = types.OK
-		event.SetResult(result)
+	EMIT:
+		event := &types.Event{
+			Source:      "rule",
+			Timestamp:   types.FromTime(time.Now()),
+			Status:      result.Status,
+			Description: "",
+			Metadata:    t.Metadata.Copy(),
+
+			RuleType: t.Type,
+			RuleID:   t.RuleID,
+			Result:   result,
+		}
+		event.Metadata.Merge(result.Metadata)
+		event.Identifier, _ = t.EventIdentifierPattern.Parse(event.Metadata)
 		w.emit(event)
 	}
 }
