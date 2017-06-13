@@ -57,7 +57,7 @@ func (r *Rule) Validate() error {
 		return fmt.Errorf("Invalid interval: %s", r.Interval)
 	}
 
-	if r.Timeout.Duration < r.Interval.Duration {
+	if r.Timeout.Duration > r.Interval.Duration {
 		return fmt.Errorf("Timeout must be less-equal than Interval")
 	}
 

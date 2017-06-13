@@ -74,11 +74,13 @@ func (w *worker) apiCreateRule(c *gin.Context) {
 	rule := &types.Rule{}
 	if err = json.Unmarshal(body, rule); err != nil {
 		apiWriteFail(c, 400, "Error parsing body, err: %s", err)
+		return
 	}
 	// force reset rule.ID to 0, user should not provide an ID
 	rule.ID = 0
 	if err = rule.Validate(); err != nil {
 		apiWriteFail(c, 400, "Invalid rule: %s", err)
+		return
 	}
 
 	if _, err = w.rdb.Insert(rule); err != nil {

@@ -147,6 +147,7 @@ func (w *worker) executeGraphiteCheck(t *types.Task, c *types.GraphiteCheck) {
 		result.MetricTimestamp = types.FromTime(time.Unix(int64(ts), 0))
 		result.MetricValue = v
 		result.MetricValueAbsent = absent
+		result.MetricName = metric.GetName()
 
 		isCritical, isUnknown = c.CriticalExpression.Evaluate(v, absent)
 		if isUnknown {
