@@ -22,6 +22,7 @@ type Config struct {
 	EmitFilename    string `yaml:"emit_filename"`
 	EmitNSQDTCPAddr string `yaml:"emit_nsqd_tcp_address"`
 	EmitNSQTopic    string `yaml:"emit_nsq_topic"`
+	FilterMode      int    `yaml:"filter_mode"`
 }
 
 type executorWorker struct {
@@ -29,6 +30,7 @@ type executorWorker struct {
 	logger   *logging.Logger
 	consumer *nsq.Consumer
 	emitter  Emitter
+	filter   *eventFilter
 	stop     chan struct{}
 }
 
@@ -47,12 +49,15 @@ func Run(config *Config) {
 		emitter = NewNSQEmitter(config.EmitNSQDTCPAddr, config.EmitNSQTopic)
 	}
 
+	filter := NewEventFilter(config.FilterMode)
+
 	for i := 0; i < config.NumWorkers; i++ {
 		name := fmt.Sprintf("executor-%d", i)
 		workers[i] = &executorWorker{
 			config:  config,
 			logger:  logging.GetLogger(name, config.Log),
 			emitter: emitter,
+			filter:  filter,
 			stop:    make(chan struct{}),
 		}
 		workers[i].Start()
@@ -189,6 +194,8 @@ func (w *executorWorker) doGraphiteTask(task *types.Task) {
 
 func (w *executorWorker) emit(e *types.Event) {
 	if w.emitter != nil {
-		w.emitter.Emit(e)
+		if w.filter.ShouldEmit(e) {
+			w.emitter.Emit(e)
+		}
 	}
 }

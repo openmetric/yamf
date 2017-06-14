@@ -77,9 +77,8 @@ func NewFileEmitter(filename string) *FileEmitter {
 }
 
 func (e *FileEmitter) Emit(event *types.Event) {
-	data, _ := json.Marshal(event)
-	e.file.Write(data)
-	e.file.Write([]byte("\n"))
+	out := fmt.Sprintf("[%v][%d] %s\n", event.Timestamp, event.Status, event.Identifier)
+	e.file.WriteString(out)
 }
 
 func (e *FileEmitter) Close() {
