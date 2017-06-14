@@ -16,9 +16,9 @@ type Task struct {
 	EventIdentifierPattern *IdentifierTemplate `json:"event_identifier_pattern"`
 
 	// execution instructions
-	Schedule   Time     `json:"schedule"`   // when the task was scheduled (emitted from scheduler)
-	Timeout    Duration `json:"timeout"`    // how long should the task execution take at most
-	Expiration Time     `json:"expiration"` // if now is beyond expiration, the task should not be executed
+	Schedule   Time `json:"schedule"`   // when the task was scheduled (emitted from scheduler)
+	Deadline   Time `json:"deadline"`   // how long should the task execution take at most
+	Expiration Time `json:"expiration"` // if now is beyond expiration, the task should not be executed
 
 	RuleID int `json:"rule_id"` // the rule from which this task was generated
 }
@@ -34,8 +34,8 @@ func NewTaskFromRule(r *Rule) *Task {
 		EventIdentifierPattern: NewIdentifierTemplate(r.EventIdentifierPattern),
 
 		Schedule:   FromTime(now),
-		Timeout:    r.Timeout,
-		Expiration: FromTime(now.Add(r.Timeout.Duration)),
+		Deadline:   FromTime(now.Add(r.Timeout.Duration)),
+		Expiration: FromTime(now.Add(r.Interval.Duration)),
 	}
 	return task
 }
