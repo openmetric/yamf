@@ -114,12 +114,12 @@ func (w *worker) startSchedule(rule *types.Rule) {
 }
 
 func (w *worker) stopSchedule(id int) {
+	w.Lock()
+	defer w.Unlock()
 	if s, ok := w.rules[id]; ok {
 		if s.stop != nil {
 			close(s.stop)
 		}
-		w.Lock()
-		defer w.Unlock()
 		delete(w.rules, id)
 	}
 }
