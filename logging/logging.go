@@ -48,11 +48,11 @@ func newLogFileManager() *logFileManager {
 }
 
 func (m *logFileManager) OpenFile(filename string) (*os.File, error) {
+	m.Lock()
+	defer m.Unlock()
 	if f, ok := m.opened[filename]; ok {
 		return f, nil
 	}
-	m.Lock()
-	defer m.Unlock()
 	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
 	if err != nil {
 		return nil, err
