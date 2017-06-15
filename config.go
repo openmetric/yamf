@@ -32,6 +32,11 @@ func NewConfig() *Config {
 		Executor: &executor.Config{
 			NumWorkers: 4,
 			Log:        logging.NewLoggerConfig(),
+			Emit: &executor.EmitConfig{
+				Type:       "file",
+				Filename:   "/dev/stdout",
+				FilterMode: 0,
+			},
 		},
 	}
 

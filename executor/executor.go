@@ -17,12 +17,23 @@ type Config struct {
 	NSQTopic           string                `yaml:"nsq_topic"`
 	NSQChannel         string                `yaml:"nsq_channel"`
 	Log                *logging.LoggerConfig `yaml:"log"`
+	Emit               *EmitConfig           `yaml:"emit"`
+}
 
-	EmitType        string `yaml:"emit_type"`
-	EmitFilename    string `yaml:"emit_filename"`
-	EmitNSQDTCPAddr string `yaml:"emit_nsqd_tcp_address"`
-	EmitNSQTopic    string `yaml:"emit_nsq_topic"`
-	FilterMode      int    `yaml:"filter_mode"`
+type EmitConfig struct {
+	Type       string `yaml:"type"`
+	FilterMode int    `yaml:"filter_mode"`
+
+	// file emitter
+	Filename string `yaml:"filename"`
+
+	// nsq emitter
+	NSQDTCPAddr string `yaml:"nsqd_tcp_address"`
+	NSQTopic    string `yaml:"nsq_topic"`
+
+	// rabbitmq emitter
+	RabbitMQUri   string `yaml:"rabbitmq_uri"`
+	RabbitMQQueue string `yaml:"rabbitmq_queue"`
 }
 
 type executorWorker struct {
@@ -42,14 +53,16 @@ func Run(config *Config) {
 	workers = make([]*executorWorker, config.NumWorkers)
 
 	var emitter Emitter
-	switch config.EmitType {
+	switch config.Emit.Type {
 	case "file":
-		emitter = NewFileEmitter(config.EmitFilename)
+		emitter = NewFileEmitter(config.Emit.Filename)
 	case "nsq":
-		emitter = NewNSQEmitter(config.EmitNSQDTCPAddr, config.EmitNSQTopic)
+		emitter = NewNSQEmitter(config.Emit.NSQDTCPAddr, config.Emit.NSQTopic)
+	case "rabbitmq":
+		emitter = NewRabbitMQEmitter(config.Emit.RabbitMQUri, config.Emit.RabbitMQQueue)
 	}
 
-	filter := NewEventFilter(config.FilterMode)
+	filter := NewEventFilter(config.Emit.FilterMode)
 
 	for i := 0; i < config.NumWorkers; i++ {
 		name := fmt.Sprintf("executor-%d", i)
