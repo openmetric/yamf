@@ -3,139 +3,189 @@ package scheduler
 import (
 	"encoding/json"
 	"github.com/nsqio/go-nsq"
+	"github.com/openmetric/yamf/internal/ruledb"
 	"github.com/openmetric/yamf/internal/types"
 	"github.com/openmetric/yamf/logging"
 	"math/rand"
-	"os"
 	"sync"
 	"time"
 )
 
-// Config of scheduler
 type Config struct {
-	ListenAddr      string                `yaml:"listen_addr"`
-	DBPath          string                `yaml:"db_path"`
-	NSQDTcpAddr     string                `yaml:"nsqd_tcp_address"`
-	NSQTopic        string                `yaml:"nsq_topic"`
-	Log             *logging.LoggerConfig `yaml:"log"`
-	HTTPLogFilename string                `yaml:"http_log_filename"`
+	// API Server listen address
+	ListenAddress string `yaml:"listen_address"`
+
+	// tiedot database
+	DBPath       string `yaml:"db_path"`
+	DBCollection string `yaml:"db_collection"`
+
+	// nsqd and topic to publish task to
+	NSQDTcpAddr string `yaml:"nsqd_tcp_address"`
+	NSQTopic    string `yaml:"nsq_topic"`
 }
 
-type worker struct {
-	config *Config
+func NewConfig() *Config {
+	return &Config{
+		ListenAddress: ":8080",
+		DBPath:        "./var/db",
+		DBCollection:  "rules",
+		NSQDTcpAddr:   "127.0.0.1:4150",
+		NSQTopic:      "yamf_tasks",
+	}
+}
 
-	rdb      *types.RuleDB
+// Scheduler implements main.Module
+type Scheduler struct {
+	config   *Config
+	logger   *logging.Logger
 	producer *nsq.Producer
-	rules    map[int]*ruleScheduler
-	sync.RWMutex
+	rdb      *ruledb.RuleDB
 
-	logger *logging.Logger
+	apiServerStop chan struct{}
+
+	rules map[int]*RunningRule
+	sync.RWMutex
 }
 
-// Run the scheduler
-func Run(config *Config) {
-	logger := logging.GetLogger("scheduler", config.Log)
-
-	rdb, err := types.NewRuleDB(config.DBPath)
-	if err != nil {
-		logger.Fatal("error initializing rule db: ", err)
-		os.Exit(1)
+func NewScheduler(config *Config, logger *logging.Logger) (*Scheduler, error) {
+	// TODO check if config is valid
+	scheduler := &Scheduler{
+		config: config,
+		logger: logger,
+		rules:  make(map[int]*RunningRule),
 	}
+	return scheduler, nil
+}
 
+func (s *Scheduler) Start() error {
+	// things todo
+	//  * setup nsq producer
+	//  * load all rules from db and start scheduling
+	//  * start api server
+
+	// setup nsq producer
 	nsqdConfig := nsq.NewConfig()
-	producer, err := nsq.NewProducer(config.NSQDTcpAddr, nsqdConfig)
-	if err != nil {
-		logger.Fatal("error initializing nsqd producer: ", err)
-		os.Exit(1)
-	}
-
-	w := &worker{
-		config:   config,
-		rdb:      rdb,
-		producer: producer,
-		rules:    make(map[int]*ruleScheduler),
-		logger:   logger,
-	}
-
-	// get all rules from db and start scheduling
-	rules, err := rdb.GetAll()
-	if err != nil {
-		// TODO process errors
-		w.logger.Error("Failed to GetAll() rules, err: ", err)
+	if producer, err := nsq.NewProducer(s.config.NSQDTcpAddr, nsqdConfig); err != nil {
+		s.logger.Fatalf("Failed to create nsq producer: %s", err)
+		return err
 	} else {
-		w.logger.Infof("Loaded %d rules from db", len(rules))
-		for _, rule := range rules {
-			w.startSchedule(rule)
+		s.producer = producer
+	}
+
+	// open database
+	if rdb, err := ruledb.NewRuleDB(s.config.DBPath, s.config.DBCollection); err != nil {
+		s.logger.Fatalf("Failed to open database: %s", err)
+		return err
+	} else {
+		s.rdb = rdb
+	}
+
+	// load all rules from database and run
+	if rules, errors, err := s.rdb.GetAll(); err != nil {
+		s.logger.Fatalf("Failed to fetch all rules from database: %s", err)
+		return err
+	} else {
+		for i, rule := range rules {
+			if errors[i] != nil {
+				s.logger.Errorf("Error reading rule (%d) from db: %s", rule.ID, errors[i])
+			} else {
+				s.schedule(rule)
+			}
 		}
 	}
 
-	go w.runAPIServer()
+	// start api server
+	s.runAPIServer()
+
+	return nil
 }
 
-type ruleScheduler struct {
-	types.Rule
-	stop chan struct{}
+func (s *Scheduler) Stop() {
+	// stop api server
+	s.stopAPIServer()
+
+	// stop all running rules
+	s.logger.Infof("stopping all running rules...")
+
+	ids := make([]int, 0, len(s.rules))
+	for id, _ := range s.rules {
+		ids = append(ids, id)
+	}
+
+	for _, id := range ids {
+		s.stop(id)
+	}
 }
 
-// start a go routine to schedule the given rule
-func (w *worker) startSchedule(rule *types.Rule) {
+func (s *Scheduler) GatherStats() {
+
+}
+
+func (s *Scheduler) schedule(r *types.Rule) {
+	s.stop(r.ID)
+	s.start(r)
+}
+
+func (s *Scheduler) stop(id int) {
+	s.Lock()
+	defer s.Unlock()
+	if r, ok := s.rules[id]; ok {
+		if s.stop != nil {
+			close(r.stop)
+		}
+		delete(s.rules, id)
+	}
+}
+
+func (s *Scheduler) start(rule *types.Rule) {
 	if rule.Paused {
+		s.logger.Infof("rule (%d) is paused, not scheduling", rule.ID)
 		return
 	}
 
-	s := ruleScheduler{
-		Rule: *rule,
-		stop: make(chan struct{}),
+	s.logger.Infof("Start scheduling rule: %d", rule.ID)
+
+	r := &RunningRule{
+		Rule: rule,
 	}
+	r.stop = make(chan struct{})
 
-	w.logger.Info("Start scheduling rule:", rule.ID)
-
+	s.Lock()
+	defer s.Unlock()
+	s.rules[r.ID] = r
 	go func() {
-		// sleep a random time (between 0 and interval), so that checks can be distributes evenly.
-		sleep := time.Duration(rand.Int63n(s.Interval.Nanoseconds())) * time.Nanosecond
+		// sleep a random time (between 0 and interval), so that checks can be distributed evenly.
+		sleep := time.Duration(rand.Int63n(r.Interval.Nanoseconds())) * time.Nanosecond
 		time.Sleep(sleep)
 
-		ticker := time.NewTicker(s.Interval.Duration)
+		ticker := time.NewTicker(r.Interval.Duration)
 		for {
 			select {
 			case <-ticker.C:
-				w.publish(types.NewTaskFromRule(rule))
-			case <-s.stop:
+				s.emitTask(r.Rule)
+			case <-r.stop:
 				ticker.Stop()
-				s.stop = nil
+				r.stop = nil
 				return
 			}
 		}
 	}()
-
-	w.Lock()
-	defer w.Unlock()
-	w.rules[s.ID] = &s
 }
 
-func (w *worker) stopSchedule(id int) {
-	w.Lock()
-	defer w.Unlock()
-	if s, ok := w.rules[id]; ok {
-		if s.stop != nil {
-			close(s.stop)
-		}
-		delete(w.rules, id)
-	}
-}
+func (s *Scheduler) emitTask(rule *types.Rule) {
+	t := types.NewTaskFromRule(rule)
 
-func (w *worker) updateSchedule(rule *types.Rule) {
-	w.stopSchedule(rule.ID)
-	w.startSchedule(rule)
-}
+	s.logger.Debugf("Emitting task for rule: %d", t.RuleID)
 
-func (w *worker) publish(t *types.Task) {
-	w.logger.Info("Publish Task:", t.RuleID, "metadata", t.Metadata)
-
-	// TODO consider use more efficient serialization methods, e.g. protobuf
 	if data, err := json.Marshal(t); err != nil {
-		w.logger.Error("Failed to marshal task into json")
+		s.logger.Errorf("Failed to marshal task into json: %s", err)
 	} else {
-		w.producer.Publish(w.config.NSQTopic, data)
+		s.producer.Publish(s.config.NSQTopic, data)
 	}
+}
+
+type RunningRule struct {
+	*types.Rule
+
+	stop chan struct{}
 }

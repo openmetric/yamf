@@ -22,12 +22,7 @@ func NewConfig() *Config {
 	config := &Config{
 		Log: logging.NewLoggerConfig(),
 
-		Scheduler: &scheduler.Config{
-			ListenAddr:      ":8080",
-			DBPath:          "./var/db",
-			HTTPLogFilename: "./var/log/http.log",
-			Log:             logging.NewLoggerConfig(),
-		},
+		Scheduler: scheduler.NewConfig(),
 
 		Executor: &executor.Config{
 			NumWorkers: 4,

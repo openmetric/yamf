@@ -11,6 +11,12 @@ import (
 	"syscall"
 )
 
+type Module interface {
+	Start() error
+	Stop()
+	GatherStats()
+}
+
 func main() {
 	configFile := flag.String("config", "", "Path to the `config file`.")
 	mode := flag.String("mode", "", "Modes: scheduler, executor")
@@ -19,11 +25,19 @@ func main() {
 	config := loadConfig(*configFile)
 	logger := logging.GetLogger("main", config.Log)
 
+	var module Module
+	var err error
+
 	switch *mode {
 	case "scheduler":
 		logger.Info("Running as scheduler")
 		logger.Info("Starting scheduler")
-		scheduler.Run(config.Scheduler)
+		if module, err = scheduler.NewScheduler(config.Scheduler, logger); err != nil {
+			logger.Panicf("Failed to initialize scheduler: %s", err)
+		}
+		if err = module.Start(); err != nil {
+			logger.Panicf("Failed to start scheduler: %s", err)
+		}
 	case "executor":
 		fmt.Println("Running as executor")
 		logger.Info("Starting executor")
@@ -42,7 +56,7 @@ func main() {
 			logger.Info("Got stop signal, stopping...")
 			switch *mode {
 			case "scheduler":
-				//scheduler.Stop()
+				module.Stop()
 			case "executor":
 				executor.Stop()
 			}

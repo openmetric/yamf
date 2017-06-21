@@ -3,10 +3,11 @@ package scheduler
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/HouzuoGuo/tiedot/dberr"
+	"github.com/braintree/manners"
 	"github.com/openmetric/yamf/internal/types"
 	"gopkg.in/gin-gonic/gin.v1"
 	"io/ioutil"
-	"os"
 	"strconv"
 )
 
@@ -32,7 +33,7 @@ func apiWriteFail(c *gin.Context, code int, messageFmt string, v ...interface{})
 	})
 }
 
-func (w *worker) apiGetRule(c *gin.Context) {
+func (s *Scheduler) apiGetRule(c *gin.Context) {
 	var rule *types.Rule
 	var id int
 	var err error
@@ -42,27 +43,34 @@ func (w *worker) apiGetRule(c *gin.Context) {
 		return
 	}
 
-	if rule, err = w.rdb.Get(id); err != nil {
-		apiWriteFail(c, 500, "Error loading rule from db, err: %s", err)
-	} else if rule == nil {
+	if rule, err = s.rdb.Get(id); dberr.Type(err) == dberr.ErrorNoDoc {
 		apiWriteFail(c, 404, "Rule not found")
+	} else if err != nil {
+		apiWriteFail(c, 500, "Error loading rule from db, err: %s", err)
 	} else {
 		apiWriteSuccess(c, []*types.Rule{rule})
 	}
 }
 
-func (w *worker) apiListRules(c *gin.Context) {
+func (s *Scheduler) apiListRules(c *gin.Context) {
 	var rules []*types.Rule
+	var errors []error
 	var err error
 
-	if rules, err = w.rdb.GetAll(); err != nil {
+	if rules, errors, err = s.rdb.GetAll(); err != nil {
 		apiWriteFail(c, 500, "Error loading rules from db, err: %s", err)
 	} else {
-		apiWriteSuccess(c, rules)
+		var result []*types.Rule
+		for i, rule := range rules {
+			if errors[i] == nil {
+				result = append(result, rule)
+			}
+		}
+		apiWriteSuccess(c, result)
 	}
 }
 
-func (w *worker) apiCreateRule(c *gin.Context) {
+func (s *Scheduler) apiCreateRule(c *gin.Context) {
 	var body []byte
 	var err error
 
@@ -83,17 +91,17 @@ func (w *worker) apiCreateRule(c *gin.Context) {
 		return
 	}
 
-	if _, err = w.rdb.Insert(rule); err != nil {
+	if _, err = s.rdb.Insert(rule); err != nil {
 		apiWriteFail(c, 500, "Error saving rule to db, err: %s", err)
 		return
 	}
 
-	w.startSchedule(rule)
+	s.schedule(rule)
 
 	apiWriteSuccess(c, []*types.Rule{rule})
 }
 
-func (w *worker) apiUpdateRule(c *gin.Context) {
+func (s *Scheduler) apiUpdateRule(c *gin.Context) {
 	var body []byte
 	var rule *types.Rule
 	var err error
@@ -104,7 +112,7 @@ func (w *worker) apiUpdateRule(c *gin.Context) {
 		return
 	}
 
-	if rule, err = w.rdb.Get(id); err != nil {
+	if rule, err = s.rdb.Get(id); err != nil {
 		apiWriteFail(c, 500, "Error loading old rule from db, err: %s", err)
 		return
 	} else if rule == nil {
@@ -127,17 +135,17 @@ func (w *worker) apiUpdateRule(c *gin.Context) {
 		apiWriteFail(c, 400, "Invalid rule: %s", err)
 	}
 
-	if err = w.rdb.Update(id, rule); err != nil {
+	if err = s.rdb.Update(id, rule); err != nil {
 		apiWriteFail(c, 500, "Error saving rule to db, err: %s", err)
 		return
 	}
 
-	w.updateSchedule(rule)
+	s.schedule(rule)
 
 	apiWriteSuccess(c, []*types.Rule{rule})
 }
 
-func (w *worker) apiDeleteRule(c *gin.Context) {
+func (s *Scheduler) apiDeleteRule(c *gin.Context) {
 	var err error
 	var rule *types.Rule
 	var id int
@@ -147,7 +155,7 @@ func (w *worker) apiDeleteRule(c *gin.Context) {
 		return
 	}
 
-	if rule, err = w.rdb.Get(id); err != nil {
+	if rule, err = s.rdb.Get(id); err != nil {
 		apiWriteFail(c, 500, "Error loading rule from db, err: %s", err)
 		return
 	} else if rule == nil {
@@ -155,36 +163,39 @@ func (w *worker) apiDeleteRule(c *gin.Context) {
 		return
 	}
 
-	if err = w.rdb.Delete(id); err != nil {
+	if err = s.rdb.Delete(id); err != nil {
 		apiWriteFail(c, 500, "Error deleting rule from db, err: %s", err)
 	}
 
-	w.stopSchedule(id)
+	s.stop(id)
 
 	apiWriteSuccess(c, []*types.Rule{rule})
 }
 
-func (w *worker) runAPIServer() {
+func (s *Scheduler) runAPIServer() {
 	gin.SetMode(gin.ReleaseMode)
 
 	router := gin.New()
 	router.Use(gin.Recovery())
-
-	logFile, err := os.OpenFile(w.config.HTTPLogFilename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-	if err != nil {
-		fmt.Println("Failed to open logfile:", err)
-		os.Exit(1)
-	}
-	router.Use(gin.LoggerWithWriter(logFile))
+	router.NoRoute(func(c *gin.Context) { apiWriteFail(c, 404, "no such endpoint") })
 
 	v1 := router.Group("v1")
-	v1.GET("/rules", w.apiListRules)
-	v1.POST("/rules", w.apiCreateRule)
-	v1.GET("/rules/:id", w.apiGetRule)
-	v1.PUT("/rules/:id", w.apiUpdateRule)
-	v1.PATCH("/rules/:id", w.apiUpdateRule)
-	v1.DELETE("/rules/:id", w.apiDeleteRule)
+	v1.GET("/rules", s.apiListRules)
+	v1.POST("/rules", s.apiCreateRule)
+	v1.GET("/rules/:id", s.apiGetRule)
+	v1.PUT("/rules/:id", s.apiUpdateRule)
+	v1.PATCH("/rules/:id", s.apiUpdateRule)
+	v1.DELETE("/rules/:id", s.apiDeleteRule)
 
-	router.NoRoute(func(c *gin.Context) { apiWriteFail(c, 404, "no such endpoint") })
-	router.Run(w.config.ListenAddr) // nolint
+	go func() {
+		s.apiServerStop = make(chan struct{})
+		manners.ListenAndServe(s.config.ListenAddress, router)
+		close(s.apiServerStop)
+	}()
+}
+
+func (s *Scheduler) stopAPIServer() {
+	s.logger.Infof("shutting down api server...")
+	manners.Close()
+	<-s.apiServerStop
 }
