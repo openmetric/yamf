@@ -39,9 +39,14 @@ func main() {
 			logger.Panicf("Failed to start scheduler: %s", err)
 		}
 	case "executor":
-		fmt.Println("Running as executor")
+		logger.Info("Running as executor")
 		logger.Info("Starting executor")
-		executor.Run(config.Executor)
+		if module, err = executor.NewExecutor(config.Executor, logger); err != nil {
+			logger.Panicf("Failed to initialize executor: %s", err)
+		}
+		if err = module.Start(); err != nil {
+			logger.Panicf("Failed to start executor: %s", err)
+		}
 	default:
 		fmt.Println("You must specify a valid mode with `-mode` option")
 		os.Exit(1)
@@ -55,10 +60,8 @@ func main() {
 		case <-c:
 			logger.Info("Got stop signal, stopping...")
 			switch *mode {
-			case "scheduler":
+			case "scheduler", "executor":
 				module.Stop()
-			case "executor":
-				executor.Stop()
 			}
 			return
 		}

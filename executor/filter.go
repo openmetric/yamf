@@ -19,7 +19,7 @@ type eventFilter struct {
 	ShouldEmit func(*types.Event) bool
 }
 
-func NewEventFilter(mode int) *eventFilter {
+func NewEventFilter(mode int) (*eventFilter, error) {
 	f := &eventFilter{
 		mode:       mode,
 		lastStatus: make(map[string]int),
@@ -32,7 +32,7 @@ func NewEventFilter(mode int) *eventFilter {
 	case 2:
 		f.ShouldEmit = func(e *types.Event) bool { return shouldEmit2(f, e) }
 	}
-	return f
+	return f, nil
 }
 
 func shouldEmit0(f *eventFilter, e *types.Event) bool {

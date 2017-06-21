@@ -132,3 +132,18 @@ func (e *FileEmitter) Close() {
 		e.file = nil
 	}
 }
+
+func NewEmitter(config *EmitConfig) (Emitter, error) {
+	var emitter Emitter
+	switch config.Type {
+	case "file":
+		emitter = NewFileEmitter(config.Filename)
+	case "nsq":
+		emitter = NewNSQEmitter(config.NSQDTCPAddr, config.NSQTopic)
+	case "rabbitmq":
+		emitter = NewRabbitMQEmitter(config.RabbitMQUri, config.RabbitMQQueue)
+	default:
+		return nil, fmt.Errorf("unsupported emit type: %s", config.Type)
+	}
+	return emitter, nil
+}

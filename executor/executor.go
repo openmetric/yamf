@@ -8,16 +8,34 @@ import (
 	api "github.com/openmetric/graphite-api-client"
 	"github.com/openmetric/yamf/internal/types"
 	"github.com/openmetric/yamf/logging"
+	"sync"
 	"time"
 )
 
 type Config struct {
-	NumWorkers         int                   `yaml:"num_workers"`
-	NSQLookupdHTTPAddr string                `yaml:"nsqlookupd_http_address"`
-	NSQTopic           string                `yaml:"nsq_topic"`
-	NSQChannel         string                `yaml:"nsq_channel"`
-	Log                *logging.LoggerConfig `yaml:"log"`
-	Emit               *EmitConfig           `yaml:"emit"`
+	// how many workers to run
+	NumWorkers int `yaml:num_workers`
+
+	// nsq comsumer config
+	NSQLookupdHTTPAddr string `yaml:"nsqlookupd_http_address"`
+	NSQTopic           string `yaml:"nsq_topic"`
+	NSQChannel         string `yaml:"nsq_channel"`
+
+	Emit *EmitConfig `yaml:"emit"`
+}
+
+func NewConfig() *Config {
+	return &Config{
+		NumWorkers:         1,
+		NSQLookupdHTTPAddr: "127.0.0.1:4161",
+		NSQTopic:           "yamf_tasks",
+		NSQChannel:         "yamf_task_executor",
+		Emit: &EmitConfig{
+			FilterMode: 0,
+			Type:       "file",
+			Filename:   "/dev/stdout",
+		},
+	}
 }
 
 type EmitConfig struct {
@@ -36,123 +54,129 @@ type EmitConfig struct {
 	RabbitMQQueue string `yaml:"rabbitmq_queue"`
 }
 
-type executorWorker struct {
-	config   *Config
-	logger   *logging.Logger
-	consumer *nsq.Consumer
-	emitter  Emitter
-	filter   *eventFilter
-	stop     chan struct{}
+type Executor struct {
+	config  *Config
+	logger  *logging.Logger
+	emitter Emitter
+	filter  *eventFilter
+
+	workerStops []chan struct{}
+	workerWG    *sync.WaitGroup
 }
 
-var workers []*executorWorker
-var logger *logging.Logger
+func NewExecutor(config *Config, logger *logging.Logger) (*Executor, error) {
+	executor := &Executor{
+		config: config,
+		logger: logger,
 
-func Run(config *Config) {
-	logger = logging.GetLogger("executor", config.Log)
-	workers = make([]*executorWorker, config.NumWorkers)
-
-	var emitter Emitter
-	switch config.Emit.Type {
-	case "file":
-		emitter = NewFileEmitter(config.Emit.Filename)
-	case "nsq":
-		emitter = NewNSQEmitter(config.Emit.NSQDTCPAddr, config.Emit.NSQTopic)
-	case "rabbitmq":
-		emitter = NewRabbitMQEmitter(config.Emit.RabbitMQUri, config.Emit.RabbitMQQueue)
+		workerWG: new(sync.WaitGroup),
 	}
-
-	filter := NewEventFilter(config.Emit.FilterMode)
-
-	for i := 0; i < config.NumWorkers; i++ {
-		name := fmt.Sprintf("executor-%d", i)
-		workers[i] = &executorWorker{
-			config:  config,
-			logger:  logging.GetLogger(name, config.Log),
-			emitter: emitter,
-			filter:  filter,
-			stop:    make(chan struct{}),
-		}
-		workers[i].Start()
-	}
+	return executor, nil
 }
 
-func Stop() {
-	for _, w := range workers {
-		w.Stop()
-	}
-}
-
-func (w *executorWorker) Start() {
+func (e *Executor) Start() error {
 	var err error
+	if e.emitter, err = NewEmitter(e.config.Emit); err != nil {
+		return fmt.Errorf("failed to initialize emitter: %s", err)
+	}
+	if e.filter, err = NewEventFilter(e.config.Emit.FilterMode); err != nil {
+		return fmt.Errorf("failed to create event filter: %s", err)
+	}
+
+	for i := 0; i < e.config.NumWorkers; i++ {
+		stop := make(chan struct{})
+		e.workerStops = append(e.workerStops, stop)
+		go e.runWorker(stop)
+	}
+
+	return nil
+}
+
+func (e *Executor) Stop() {
+	// stop all workers
+	for _, stop := range e.workerStops {
+		close(stop)
+	}
+	e.workerWG.Wait()
+	e.logger.Infof("executor stopped")
+}
+
+func (e *Executor) GatherStats() {
+
+}
+
+func (e *Executor) runWorker(stop chan struct{}) {
+	e.workerWG.Add(1)
+	defer e.workerWG.Done()
+
+	// setup consumer
+	var err error
+	var consumer *nsq.Consumer
+
 	nsqConfig := nsq.NewConfig()
-	if w.consumer, err = nsq.NewConsumer(w.config.NSQTopic, w.config.NSQChannel, nsqConfig); err != nil {
-		w.logger.Fatal("Failed with nsq.NewConsumer()")
+	if consumer, err = nsq.NewConsumer(e.config.NSQTopic, e.config.NSQChannel, nsqConfig); err != nil {
+		e.logger.Fatalf("failed to initialize nsq consumer: %s", err)
+		return
 	}
-	w.consumer.AddHandler(nsq.HandlerFunc(w.doTask))
-	if err = w.consumer.ConnectToNSQLookupd(w.config.NSQLookupdHTTPAddr); err != nil {
-		w.logger.Fatal("Failed to connect to nsqlookupd")
+	consumer.AddHandler(nsq.HandlerFunc(e.doTask))
+	if err = consumer.ConnectToNSQLookupd(e.config.NSQLookupdHTTPAddr); err != nil {
+		e.logger.Fatalf("Failed to connect to nsqlookupd: %s", err)
 	}
+
+	// wait for stop
+	<-stop
+	consumer.Stop()
+	<-consumer.StopChan
 }
 
-func (w *executorWorker) Stop() {
-	if w.stop != nil {
-		close(w.stop)
-		w.stop = nil
-	}
-	if w.consumer != nil {
-		w.consumer.Stop()
-		<-w.consumer.StopChan
-	}
-}
-
-func (w *executorWorker) doTask(message *nsq.Message) error {
+func (e *Executor) doTask(message *nsq.Message) error {
 	var err error
 	task := &types.Task{}
+
 	if err = json.Unmarshal(message.Body, task); err != nil {
-		w.logger.Errorf("failed to decode task from message: %s", err)
+		e.logger.Errorf("failed to decode task from message: %s", err)
 	} else {
-		w.logger.Debugf("get task, rule id: %d", task.RuleID)
+		e.logger.Debugf("get task, rule id: %d", task.RuleID)
 
 		switch task.Type {
 		case "graphite":
-			w.doGraphiteTask(task)
+			e.doGraphiteTask(task)
 		}
 	}
 	return nil
 }
 
-func (w *executorWorker) doGraphiteTask(task *types.Task) {
+func (e *Executor) doGraphiteTask(task *types.Task) {
 	var query *api.RenderQuery
 	var resp *api.RenderResponse
 	var err error
 
-	now := time.Now()
-	if now.After(task.Expiration.Time) {
-		w.logger.Warning("Expired task, RuleID: %d, Schedule Time: %v, Expiration: %s, Now: %v",
-			task.RuleID, task.Schedule, task.Expiration, now)
+	begin := time.Now()
+	if begin.After(task.Expiration.Time) {
+		e.logger.Warningf("expired task, RuleID: %d, Schedule Time: %v, Expiration: %v, Now: %v",
+			task.RuleID, task.Schedule, task.Expiration, begin)
 		return
 	}
 
 	check := task.Check.(*types.GraphiteCheck)
 	query = api.NewRenderQuery(check.GraphiteURL, check.From, check.Until, api.NewRenderTarget(check.Query))
 
-	w.logger.Debugf("Request URL: %s", query.URL())
+	e.logger.Debugf("Request URL: %s", query.URL())
 	ctx, cancel := context.WithDeadline(context.TODO(), task.Deadline.Time)
 	defer cancel()
-	resp, err = query.Request(ctx)
-	if err != nil {
-		w.logger.Errorf("Request to graphite server failed: %s", err)
+
+	if resp, err = query.Request(ctx); err != nil {
+		e.logger.Errorf("request to graphite server failed: %s", err)
 		return
 	}
 
 	metrics := resp.MultiFetchResponse.Metrics
-	w.logger.Debugf("Got %d metrics in response", len(metrics))
+	e.logger.Debugf("got %d metrics in response", len(metrics))
 
 	metaExtractRegexp, _ := types.RegexpCompile(check.MetadataExtractPattern)
 	for _, metric := range metrics {
 		result := types.NewGraphiteResult()
-		result.CheckTimestamp = types.FromTime(now)
+		result.CheckTimestamp = types.FromTime(begin)
 
 		matches := metaExtractRegexp.FindStringSubmatch(metric.Name)
 		names := metaExtractRegexp.SubexpNames()
@@ -201,14 +225,15 @@ func (w *executorWorker) doGraphiteTask(task *types.Task) {
 		}
 		event.Metadata.Merge(result.Metadata)
 		event.Identifier, _ = task.EventIdentifierPattern.Parse(event.Metadata)
-		w.emit(event)
+
+		e.emitEvent(event)
 	}
 }
 
-func (w *executorWorker) emit(e *types.Event) {
-	if w.emitter != nil {
-		if w.filter.ShouldEmit(e) {
-			w.emitter.Emit(e)
+func (e *Executor) emitEvent(event *types.Event) {
+	if e.emitter != nil {
+		if e.filter.ShouldEmit(event) {
+			e.emitter.Emit(event)
 		}
 	}
 }

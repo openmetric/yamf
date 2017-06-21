@@ -130,7 +130,7 @@ func (s *Scheduler) stop(id int) {
 	s.Lock()
 	defer s.Unlock()
 	if r, ok := s.rules[id]; ok {
-		if s.stop != nil {
+		if r.stop != nil {
 			close(r.stop)
 		}
 		delete(s.rules, id)

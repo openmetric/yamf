@@ -20,19 +20,9 @@ type Config struct {
 // NewConfig returns a default option values
 func NewConfig() *Config {
 	config := &Config{
-		Log: logging.NewLoggerConfig(),
-
+		Log:       logging.NewLoggerConfig(),
 		Scheduler: scheduler.NewConfig(),
-
-		Executor: &executor.Config{
-			NumWorkers: 4,
-			Log:        logging.NewLoggerConfig(),
-			Emit: &executor.EmitConfig{
-				Type:       "file",
-				Filename:   "/dev/stdout",
-				FilterMode: 0,
-			},
-		},
+		Executor:  executor.NewConfig(),
 	}
 
 	return config
