@@ -7,7 +7,7 @@ import (
 	"github.com/nsqio/go-nsq"
 	api "github.com/openmetric/graphite-api-client"
 	"github.com/openmetric/yamf/internal/types"
-	"github.com/openmetric/yamf/logging"
+	"go.uber.org/zap"
 	"sync"
 	"time"
 )
@@ -56,7 +56,7 @@ type EmitConfig struct {
 
 type Executor struct {
 	config  *Config
-	logger  *logging.Logger
+	logger  *zap.SugaredLogger
 	emitter Emitter
 	filter  *eventFilter
 
@@ -64,7 +64,7 @@ type Executor struct {
 	workerWG    *sync.WaitGroup
 }
 
-func NewExecutor(config *Config, logger *logging.Logger) (*Executor, error) {
+func NewExecutor(config *Config, logger *zap.SugaredLogger) (*Executor, error) {
 	executor := &Executor{
 		config: config,
 		logger: logger,
@@ -86,6 +86,7 @@ func (e *Executor) Start() error {
 	for i := 0; i < e.config.NumWorkers; i++ {
 		stop := make(chan struct{})
 		e.workerStops = append(e.workerStops, stop)
+		e.workerWG.Add(1)
 		go e.runWorker(stop)
 	}
 
@@ -98,7 +99,7 @@ func (e *Executor) Stop() {
 		close(stop)
 	}
 	e.workerWG.Wait()
-	e.logger.Infof("executor stopped")
+	e.logger.Info("executor stopped.")
 }
 
 func (e *Executor) GatherStats() {
@@ -106,7 +107,6 @@ func (e *Executor) GatherStats() {
 }
 
 func (e *Executor) runWorker(stop chan struct{}) {
-	e.workerWG.Add(1)
 	defer e.workerWG.Done()
 
 	// setup consumer
@@ -115,12 +115,11 @@ func (e *Executor) runWorker(stop chan struct{}) {
 
 	nsqConfig := nsq.NewConfig()
 	if consumer, err = nsq.NewConsumer(e.config.NSQTopic, e.config.NSQChannel, nsqConfig); err != nil {
-		e.logger.Fatalf("failed to initialize nsq consumer: %s", err)
-		return
+		e.logger.Fatalw("Failed to initialize nsq consumer.", "Error", err)
 	}
 	consumer.AddHandler(nsq.HandlerFunc(e.doTask))
 	if err = consumer.ConnectToNSQLookupd(e.config.NSQLookupdHTTPAddr); err != nil {
-		e.logger.Fatalf("Failed to connect to nsqlookupd: %s", err)
+		e.logger.Fatalw("Failed to connect to nsqlookupd.", "Error", err)
 	}
 
 	// wait for stop
@@ -134,9 +133,9 @@ func (e *Executor) doTask(message *nsq.Message) error {
 	task := &types.Task{}
 
 	if err = json.Unmarshal(message.Body, task); err != nil {
-		e.logger.Errorf("failed to decode task from message: %s", err)
+		e.logger.Errorw("Failed to decode task from message.", "Error", err)
 	} else {
-		e.logger.Debugf("get task, rule id: %d", task.RuleID)
+		e.logger.Debugw("Start doing task", "Rule ID", task.RuleID, "Task Type", task.Type)
 
 		switch task.Type {
 		case "graphite":
@@ -153,25 +152,30 @@ func (e *Executor) doGraphiteTask(task *types.Task) {
 
 	begin := time.Now()
 	if begin.After(task.Expiration.Time) {
-		e.logger.Warningf("expired task, RuleID: %d, Schedule Time: %v, Expiration: %v, Now: %v",
-			task.RuleID, task.Schedule, task.Expiration, begin)
+		e.logger.Warnw(
+			"Expired task.",
+			"Rule ID", task.RuleID,
+			"Schedule", task.Schedule,
+			"Expiration:", task.Expiration,
+			"Now", begin,
+		)
 		return
 	}
 
 	check := task.Check.(*types.GraphiteCheck)
 	query = api.NewRenderQuery(check.GraphiteURL, check.From, check.Until, api.NewRenderTarget(check.Query))
 
-	e.logger.Debugf("Request URL: %s", query.URL())
+	e.logger.Debugw("Querying graphite.", "URL", query.URL())
 	ctx, cancel := context.WithDeadline(context.TODO(), task.Deadline.Time)
 	defer cancel()
 
 	if resp, err = query.Request(ctx); err != nil {
-		e.logger.Errorf("request to graphite server failed: %s", err)
+		e.logger.Errorw("Request to graphite server failed.", "Error", err)
 		return
 	}
 
 	metrics := resp.MultiFetchResponse.Metrics
-	e.logger.Debugf("got %d metrics in response", len(metrics))
+	e.logger.Debugw("Got graphite render response.", "N Metrics", len(metrics))
 
 	metaExtractRegexp, _ := types.RegexpCompile(check.MetadataExtractPattern)
 	for _, metric := range metrics {

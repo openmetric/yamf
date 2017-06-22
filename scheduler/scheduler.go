@@ -5,7 +5,7 @@ import (
 	"github.com/nsqio/go-nsq"
 	"github.com/openmetric/yamf/internal/ruledb"
 	"github.com/openmetric/yamf/internal/types"
-	"github.com/openmetric/yamf/logging"
+	"go.uber.org/zap"
 	"math/rand"
 	"sync"
 	"time"
@@ -37,7 +37,7 @@ func NewConfig() *Config {
 // Scheduler implements main.Module
 type Scheduler struct {
 	config   *Config
-	logger   *logging.Logger
+	logger   *zap.SugaredLogger
 	producer *nsq.Producer
 	rdb      *ruledb.RuleDB
 
@@ -47,7 +47,7 @@ type Scheduler struct {
 	sync.RWMutex
 }
 
-func NewScheduler(config *Config, logger *logging.Logger) (*Scheduler, error) {
+func NewScheduler(config *Config, logger *zap.SugaredLogger) (*Scheduler, error) {
 	// TODO check if config is valid
 	scheduler := &Scheduler{
 		config: config,
@@ -66,28 +66,25 @@ func (s *Scheduler) Start() error {
 	// setup nsq producer
 	nsqdConfig := nsq.NewConfig()
 	if producer, err := nsq.NewProducer(s.config.NSQDTcpAddr, nsqdConfig); err != nil {
-		s.logger.Fatalf("Failed to create nsq producer: %s", err)
-		return err
+		s.logger.Fatalw("Failed to create nsq producer.", "Error", err)
 	} else {
 		s.producer = producer
 	}
 
 	// open database
 	if rdb, err := ruledb.NewRuleDB(s.config.DBPath, s.config.DBCollection); err != nil {
-		s.logger.Fatalf("Failed to open database: %s", err)
-		return err
+		s.logger.Fatalw("Failed to open database.", "Error", err)
 	} else {
 		s.rdb = rdb
 	}
 
 	// load all rules from database and run
 	if rules, errors, err := s.rdb.GetAll(); err != nil {
-		s.logger.Fatalf("Failed to fetch all rules from database: %s", err)
-		return err
+		s.logger.Fatalw("Failed to fetch all rules from database.", "Error", err)
 	} else {
 		for i, rule := range rules {
 			if errors[i] != nil {
-				s.logger.Errorf("Error reading rule (%d) from db: %s", rule.ID, errors[i])
+				s.logger.Errorw("Error reading rule from db.", "Rule ID", rule.ID, "Error", errors[i])
 			} else {
 				s.schedule(rule)
 			}
@@ -105,7 +102,7 @@ func (s *Scheduler) Stop() {
 	s.stopAPIServer()
 
 	// stop all running rules
-	s.logger.Infof("stopping all running rules...")
+	s.logger.Info("Stopping all running rules...")
 
 	ids := make([]int, 0, len(s.rules))
 	for id, _ := range s.rules {
@@ -139,11 +136,11 @@ func (s *Scheduler) stop(id int) {
 
 func (s *Scheduler) start(rule *types.Rule) {
 	if rule.Paused {
-		s.logger.Infof("rule (%d) is paused, not scheduling", rule.ID)
+		s.logger.Infow("Rule is paused, not scheduling", "Rule ID", rule.ID)
 		return
 	}
 
-	s.logger.Infof("Start scheduling rule: %d", rule.ID)
+	s.logger.Infow("Start scheduling rule", "Rule ID", rule.ID)
 
 	r := &RunningRule{
 		Rule: rule,
@@ -175,10 +172,10 @@ func (s *Scheduler) start(rule *types.Rule) {
 func (s *Scheduler) emitTask(rule *types.Rule) {
 	t := types.NewTaskFromRule(rule)
 
-	s.logger.Debugf("Emitting task for rule: %d", t.RuleID)
+	s.logger.Debugw("Emitting task.", "Rule ID", t.RuleID)
 
 	if data, err := json.Marshal(t); err != nil {
-		s.logger.Errorf("Failed to marshal task into json: %s", err)
+		s.logger.Errorw("Failed to marshal task into json.", "Error", err)
 	} else {
 		s.producer.Publish(s.config.NSQTopic, data)
 	}
