@@ -26,21 +26,21 @@ func NewEventFilter(mode int) (*eventFilter, error) {
 	}
 	switch mode {
 	case 0:
-		f.ShouldEmit = func(e *types.Event) bool { return shouldEmit0(f, e) }
+		f.ShouldEmit = f.shouldEmit0
 	case 1:
-		f.ShouldEmit = func(e *types.Event) bool { return shouldEmit1(f, e) }
+		f.ShouldEmit = f.shouldEmit1
 	case 2:
-		f.ShouldEmit = func(e *types.Event) bool { return shouldEmit2(f, e) }
+		f.ShouldEmit = f.shouldEmit2
 	}
 	return f, nil
 }
 
-func shouldEmit0(f *eventFilter, e *types.Event) bool {
+func (f *eventFilter) shouldEmit0(e *types.Event) bool {
 	// mode 0, filter nothing, just return true
 	return true
 }
 
-func shouldEmit1(f *eventFilter, e *types.Event) bool {
+func (f *eventFilter) shouldEmit1(e *types.Event) bool {
 	// mode 1, only fire on status change
 	f.Lock()
 	defer f.Unlock()
@@ -61,7 +61,7 @@ func shouldEmit1(f *eventFilter, e *types.Event) bool {
 	return false
 }
 
-func shouldEmit2(f *eventFilter, e *types.Event) bool {
+func (f *eventFilter) shouldEmit2(e *types.Event) bool {
 	// 2: fire all non-ok events, but only first ok events
 	f.Lock()
 	defer f.Unlock()
