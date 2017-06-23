@@ -1,20 +1,20 @@
-BLDDIR = build
+BUILDDIR = build
 GOFLAGS =
 
 APPS = executor scheduler
 all: $(APPS)
 
-$(BUILDIR)/yamf-executor: $(wildcard apps/executor/*.go executor/*.go internal/*/*.go)
-$(BULDDIR)/yamf-scheduler: $(wildcard apps/scheduler/*.go scheduler/*.go internal/*/*.go)
+$(BUILDDIR)/yamf-executor: $(wildcard apps/executor/*.go executor/*.go internal/*/*.go)
+$(BUILDDIR)/yamf-scheduler: $(wildcard apps/scheduler/*.go scheduler/*.go internal/*/*.go)
 
-$(BLDDIR)/yamf-%:
+$(BUILDDIR)/yamf-%:
 	@mkdir -p $(dir $@)
 	go build ${GOFLAGS} -o $@ ./apps/$*
 
-$(APPS): %: $(BLDDIR)/yamf-%
+$(APPS): %: $(BUILDDIR)/yamf-%
 
 clean:
-	rm -fr $(BLDDIR)
+	rm -fr $(BUILDDIR)
 
 .PHONY: clean all
 .PHONY: $(APPS)
