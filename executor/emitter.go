@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/nsqio/go-nsq"
 	"github.com/openmetric/yamf/internal/types"
+	"github.com/streadway/amqp"
 	"os"
 )
 
@@ -48,14 +49,58 @@ func (e *NSQEmitter) Close() {
 }
 
 type RabbitMQEmitter struct {
+	Uri       string
+	QueueName string
+
+	conn *amqp.Connection
+	ch   *amqp.Channel
+	q    *amqp.Queue
+}
+
+func NewRabbitMQEmitter(uri string, queueName string) *RabbitMQEmitter {
+	conn, err := amqp.Dial(uri)
+	if err != nil {
+		fmt.Println("error initializing rabbitmq producer for emitting:", err)
+		os.Exit(1)
+	}
+	ch, err := conn.Channel()
+	if err != nil {
+		fmt.Println("failed to open rabbitmq channel")
+		os.Exit(1)
+	}
+	q, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
+	if err != nil {
+		fmt.Println("failed to declare queue")
+		os.Exit(1)
+	}
+
+	e := &RabbitMQEmitter{
+		Uri:       uri,
+		QueueName: queueName,
+		conn:      conn,
+		ch:        ch,
+		q:         &q,
+	}
+	return e
 }
 
 func (e *RabbitMQEmitter) Emit(event *types.Event) {
-
+	data, _ := json.Marshal(event)
+	e.ch.Publish("", e.q.Name, false, false, amqp.Publishing{
+		DeliveryMode: amqp.Persistent,
+		ContentType:  "application/json",
+		Body:         data,
+	})
 }
 
 func (e *RabbitMQEmitter) Close() {
-
+	if e.conn != nil {
+		e.ch.Close()
+		e.conn.Close()
+		e.ch = nil
+		e.conn = nil
+		e.q = nil
+	}
 }
 
 type FileEmitter struct {
@@ -86,4 +131,19 @@ func (e *FileEmitter) Close() {
 		e.file.Close()
 		e.file = nil
 	}
+}
+
+func NewEmitter(config *EmitConfig) (Emitter, error) {
+	var emitter Emitter
+	switch config.Type {
+	case "file":
+		emitter = NewFileEmitter(config.Filename)
+	case "nsq":
+		emitter = NewNSQEmitter(config.NSQDTCPAddr, config.NSQTopic)
+	case "rabbitmq":
+		emitter = NewRabbitMQEmitter(config.RabbitMQUri, config.RabbitMQQueue)
+	default:
+		return nil, fmt.Errorf("unsupported emit type: %s", config.Type)
+	}
+	return emitter, nil
 }
