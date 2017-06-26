@@ -1,7 +1,6 @@
 package stats
 
 import (
-	"fmt"
 	"github.com/openmetric/graphite-client"
 	"os"
 	"reflect"
@@ -27,7 +26,6 @@ func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 	hostname, _ := os.Hostname()
 	hostname = strings.Replace(hostname, ".", "-", -1)
-	fmt.Println("stats:", c)
 	c.Prefix = strings.Replace(c.Prefix, "{host}", hostname, -1)
 
 	return nil
@@ -75,6 +73,18 @@ func (g *Gauge) Set(n int64) {
 // Load gauge's value
 func (g *Gauge) Load() int64 {
 	return atomic.LoadInt64(&g.value)
+}
+
+func (g *Gauge) Add(n int64) {
+	atomic.AddInt64(&g.value, n)
+}
+
+func (g *Gauge) Inc() {
+	atomic.AddInt64(&g.value, 1)
+}
+
+func (g *Gauge) Dec() {
+	atomic.AddInt64(&g.value, -1)
 }
 
 func ToGraphiteMetric(s interface{}, prefix string) []*graphite.Metric {

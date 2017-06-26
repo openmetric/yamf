@@ -3,7 +3,9 @@ package scheduler
 import (
 	"encoding/json"
 	"github.com/nsqio/go-nsq"
+	"github.com/openmetric/graphite-client"
 	"github.com/openmetric/yamf/internal/ruledb"
+	"github.com/openmetric/yamf/internal/stats"
 	"github.com/openmetric/yamf/internal/types"
 	"go.uber.org/zap"
 	"math/rand"
@@ -40,6 +42,7 @@ type Scheduler struct {
 	logger   *zap.SugaredLogger
 	producer *nsq.Producer
 	rdb      *ruledb.RuleDB
+	stats    Stats
 
 	apiServerStop chan struct{}
 
@@ -114,8 +117,8 @@ func (s *Scheduler) Stop() {
 	}
 }
 
-func (s *Scheduler) GatherStats() {
-
+func (s *Scheduler) GatherStats() []*graphite.Metric {
+	return stats.ToGraphiteMetric(s.stats, "")
 }
 
 func (s *Scheduler) schedule(r *types.Rule) {
@@ -128,6 +131,8 @@ func (s *Scheduler) stop(id int) {
 	defer s.Unlock()
 	if r, ok := s.rules[id]; ok {
 		if r.stop != nil {
+			s.logger.Infow("Stop scheduling rule", "Rule ID", r.ID)
+			s.stats.ActiveRules.Dec()
 			close(r.stop)
 		}
 		delete(s.rules, id)
@@ -140,6 +145,7 @@ func (s *Scheduler) start(rule *types.Rule) {
 		return
 	}
 
+	s.stats.ActiveRules.Inc()
 	s.logger.Infow("Start scheduling rule", "Rule ID", rule.ID)
 
 	r := &RunningRule{
@@ -170,6 +176,7 @@ func (s *Scheduler) start(rule *types.Rule) {
 }
 
 func (s *Scheduler) emitTask(rule *types.Rule) {
+	s.stats.TaskScheduled.Inc()
 	t := types.NewTaskFromRule(rule)
 
 	s.logger.Debugw("Emitting task.", "Rule ID", t.RuleID)
