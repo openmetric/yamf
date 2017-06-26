@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"github.com/nsqio/go-nsq"
 	api "github.com/openmetric/graphite-api-client"
+	"github.com/openmetric/graphite-client"
+	"github.com/openmetric/yamf/internal/stats"
 	"github.com/openmetric/yamf/internal/types"
 	"go.uber.org/zap"
 	"sync"
@@ -59,6 +61,7 @@ type Executor struct {
 	logger  *zap.SugaredLogger
 	emitter Emitter
 	filter  *eventFilter
+	stats   Stats
 
 	workerStops []chan struct{}
 	workerWG    *sync.WaitGroup
@@ -102,8 +105,8 @@ func (e *Executor) Stop() {
 	e.logger.Info("executor stopped.")
 }
 
-func (e *Executor) GatherStats() {
-
+func (e *Executor) GatherStats() []*graphite.Metric {
+	return stats.ToGraphiteMetric(e.stats, "")
 }
 
 func (e *Executor) runWorker(stop chan struct{}) {
@@ -132,15 +135,30 @@ func (e *Executor) doTask(message *nsq.Message) error {
 	var err error
 	task := &types.Task{}
 
+	e.stats.TaskReceived.Inc()
+
 	if err = json.Unmarshal(message.Body, task); err != nil {
 		e.logger.Errorw("Failed to decode task from message.", "Error", err)
 	} else {
-		e.logger.Debugw("Start doing task", "Rule ID", task.RuleID, "Task Type", task.Type)
+		now := time.Now()
+		if now.After(task.Expiration.Time) {
+			e.stats.TaskExpired.Inc()
+			e.logger.Warnw(
+				"Expired task.",
+				"Rule ID", task.RuleID,
+				"Schedule", task.Schedule,
+				"Expiration:", task.Expiration,
+				"Now", now,
+			)
+			return nil
+		}
 
+		e.logger.Debugw("Start doing task", "Rule ID", task.RuleID, "Task Type", task.Type)
 		switch task.Type {
 		case "graphite":
 			e.doGraphiteTask(task)
 		}
+		e.stats.TaskExecuted.Inc()
 	}
 	return nil
 }
@@ -150,31 +168,25 @@ func (e *Executor) doGraphiteTask(task *types.Task) {
 	var resp *api.RenderResponse
 	var err error
 
-	begin := time.Now()
-	if begin.After(task.Expiration.Time) {
-		e.logger.Warnw(
-			"Expired task.",
-			"Rule ID", task.RuleID,
-			"Schedule", task.Schedule,
-			"Expiration:", task.Expiration,
-			"Now", begin,
-		)
-		return
-	}
+	defer e.stats.GraphiteExecutor.TaskExecuted.Inc()
 
+	begin := time.Now()
 	check := task.Check.(*types.GraphiteCheck)
 	query = api.NewRenderQuery(check.GraphiteURL, check.From, check.Until, api.NewRenderTarget(check.Query))
 
 	e.logger.Debugw("Querying graphite.", "URL", query.URL())
 	ctx, cancel := context.WithDeadline(context.TODO(), task.Deadline.Time)
+	e.stats.GraphiteExecutor.APIRequestTotal.Inc()
 	defer cancel()
 
 	if resp, err = query.Request(ctx); err != nil {
+		e.stats.GraphiteExecutor.APIRequestFailed.Inc()
 		e.logger.Errorw("Request to graphite server failed.", "Error", err)
 		return
 	}
 
 	metrics := resp.MultiFetchResponse.Metrics
+	e.stats.GraphiteExecutor.MetricsReceived.Add(uint64(len(metrics)))
 	e.logger.Debugw("Got graphite render response.", "N Metrics", len(metrics))
 
 	metaExtractRegexp, _ := types.RegexpCompile(check.MetadataExtractPattern)
@@ -230,11 +242,34 @@ func (e *Executor) doGraphiteTask(task *types.Task) {
 		event.Metadata.Merge(result.Metadata)
 		event.Identifier, _ = task.EventIdentifierPattern.Parse(event.Metadata)
 
+		switch result.Status {
+		case types.OK:
+			e.stats.GraphiteExecutor.EventOK.Inc()
+		case types.Warning:
+			e.stats.GraphiteExecutor.EventWarning.Inc()
+		case types.Critical:
+			e.stats.GraphiteExecutor.EventCritical.Inc()
+		case types.Unknown:
+			e.stats.GraphiteExecutor.EventUnknown.Inc()
+		}
+
+		e.stats.GraphiteExecutor.EventEmitted.Inc()
 		e.emitEvent(event)
 	}
 }
 
 func (e *Executor) emitEvent(event *types.Event) {
+	switch event.Status {
+	case types.OK:
+		e.stats.EventOK.Inc()
+	case types.Warning:
+		e.stats.EventWarning.Inc()
+	case types.Critical:
+		e.stats.EventCritical.Inc()
+	case types.Unknown:
+		e.stats.EventUnknown.Inc()
+	}
+	e.stats.EventEmitted.Inc()
 	if e.emitter != nil {
 		if e.filter.ShouldEmit(event) {
 			e.emitter.Emit(event)
