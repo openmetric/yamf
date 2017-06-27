@@ -1,5 +1,5 @@
 BUILDDIR = build
-GOFLAGS =
+GOFLAGS = -ldflags="-s -w"
 
 APPS = executor scheduler
 all: $(APPS)
@@ -14,7 +14,7 @@ $(BUILDDIR)/yamf-%:
 $(APPS): %: $(BUILDDIR)/yamf-%
 
 clean:
-	rm -fr $(BUILDDIR)
+	rm -fr $(BUILDDIR)/yamf-*
 
 .PHONY: clean all
 .PHONY: $(APPS)
