@@ -48,7 +48,7 @@ func main() {
 		mode = "scheduler"
 	}
 
-	config := struct {
+	config := &struct {
 		Mode      string            `yaml:"mode"`
 		Executor  *executor.Config  `yaml:"executor"`
 		Scheduler *scheduler.Config `yaml:"scheduler"`

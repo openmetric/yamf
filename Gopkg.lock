@@ -83,7 +83,7 @@
   branch = "master"
   name = "github.com/openmetric/graphite-client"
   packages = ["."]
-  revision = "ffbebedd650c9cce897249fadc0302a473fa4364"
+  revision = "323861632f4ce1accb4349ad824375c5f3dabff5"
 
 [[projects]]
   branch = "master"
