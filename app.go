@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+var BuildVersion = "(development build)"
+
 type Module interface {
 	Name() string
 	Start() error
@@ -26,7 +28,13 @@ type Module interface {
 
 func main() {
 	configFile := flag.String("config", "", "Path to the `config file`.")
+	printVersion := flag.Bool("version", false, "Print version and exit.")
 	flag.Parse()
+
+	if *printVersion {
+		fmt.Printf("yamf version: %s\n", BuildVersion)
+		os.Exit(0)
+	}
 
 	var err error
 	var module Module
@@ -60,6 +68,8 @@ func main() {
 	if logger, err = logging.NewLogger(config.Log); err != nil {
 		panic(fmt.Sprintf("Error initializing logger: %s", err))
 	}
+
+	logger.Infof("yamf version: %s", BuildVersion)
 
 	switch config.Mode {
 	case "executor":
