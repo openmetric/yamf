@@ -1,20 +1,15 @@
-BUILDDIR = build
-GOFLAGS = -ldflags="-s -w"
+VERSION ?= $(shell git describe --abbrev=4 --dirty --always --tags)
+GO ?= go
+LDFLAGS ?= -s -w -X main.BuildVersion=$(VERSION)
 
-APPS = executor scheduler
-all: $(APPS)
+all: yamf
 
-$(BUILDDIR)/yamf-executor: $(wildcard app.go executor/*.go internal/*/*.go)
-$(BUILDDIR)/yamf-scheduler: $(wildcard app.go scheduler/*.go internal/*/*.go)
+yamf: dep $(wildcard app.go executor/*.go scheduler/*.go internal/*/*.go)
+	$(GO) build --ldflags "$(LDFLAGS)" -o yamf app.go
 
-$(BUILDDIR)/yamf-%:
-	@mkdir -p $(dir $@)
-	go build ${GOFLAGS} -o $@ app.go
-
-$(APPS): %: $(BUILDDIR)/yamf-%
+dep:
+	@which dep 2>/dev/null || $(GO) get github.com/golang/dep/cmd/dep
+	dep ensure
 
 clean:
-	rm -fr $(BUILDDIR)/yamf-*
-
-.PHONY: clean all
-.PHONY: $(APPS)
+	rm -f ./yamf
