@@ -60,6 +60,10 @@ func NewScheduler(config *Config, logger *zap.SugaredLogger) (*Scheduler, error)
 	return scheduler, nil
 }
 
+func (s *Scheduler) Name() string {
+	return "scheduler"
+}
+
 func (s *Scheduler) Start() error {
 	// things todo
 	//  * setup nsq producer

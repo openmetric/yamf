@@ -77,6 +77,10 @@ func NewExecutor(config *Config, logger *zap.SugaredLogger) (*Executor, error) {
 	return executor, nil
 }
 
+func (e *Executor) Name() string {
+	return "executor"
+}
+
 func (e *Executor) Start() error {
 	var err error
 	if e.emitter, err = NewEmitter(e.config.Emit); err != nil {

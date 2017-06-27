@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/openmetric/graphite-client"
+	"github.com/openmetric/yamf/executor"
 	"github.com/openmetric/yamf/internal/logging"
 	"github.com/openmetric/yamf/internal/stats"
 	"github.com/openmetric/yamf/internal/utils"
@@ -11,23 +12,43 @@ import (
 	"go.uber.org/zap"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
+
+type Module interface {
+	Name() string
+	Start() error
+	Stop()
+	GatherStats() []*graphite.Metric
+}
 
 func main() {
 	configFile := flag.String("config", "", "Path to the `config file`.")
 	flag.Parse()
 
 	var err error
-	var module *scheduler.Scheduler
+	var module Module
 	var logger *zap.SugaredLogger
 
+	var mode string
+	switch {
+	case strings.HasSuffix(os.Args[0], "executor"):
+		mode = "executor"
+	case strings.HasSuffix(os.Args[0], "scheduler"):
+		mode = "scheduler"
+	}
+
 	config := struct {
+		Mode      string            `yaml:"mode"`
+		Executor  *executor.Config  `yaml:"executor"`
 		Scheduler *scheduler.Config `yaml:"scheduler"`
 		Log       *logging.Config   `yaml:"log"`
 		Stats     *stats.Config     `yaml:"stats"`
 	}{
+		Mode:      mode,
+		Executor:  executor.NewConfig(),
 		Scheduler: scheduler.NewConfig(),
 		Log:       logging.NewConfig(),
 		Stats:     stats.NewConfig(),
@@ -40,8 +61,17 @@ func main() {
 		panic(fmt.Sprintf("Error initializing logger: %s", err))
 	}
 
-	if module, err = scheduler.NewScheduler(config.Scheduler, logger); err != nil {
-		logger.Panicw("Error initializing scheduler.", "Error", err)
+	switch config.Mode {
+	case "executor":
+		if module, err = executor.NewExecutor(config.Executor, logger); err != nil {
+			logger.Panicw("Error initializing executor.", "Error", err)
+		}
+	case "scheduler":
+		if module, err = scheduler.NewScheduler(config.Scheduler, logger); err != nil {
+			logger.Panicw("Error initializing scheduler.", "Error", err)
+		}
+	default:
+		logger.Panicw("You must specify a valid `mode` in config file.")
 	}
 
 	var statsClient *graphite.Client
@@ -57,7 +87,7 @@ func main() {
 	}
 
 	if err = module.Start(); err != nil {
-		logger.Panicw("Error starting scheduler.", "Error", err)
+		logger.Panicw("Error starting "+module.Name()+".", "Error", err)
 	}
 
 	c := make(chan os.Signal, 1)
@@ -73,7 +103,7 @@ func main() {
 	for {
 		select {
 		case <-c:
-			logger.Info("Got stop signal, stopping scheduler...")
+			logger.Info("Got stop signal, stopping " + module.Name() + ", ...")
 			module.Stop()
 			return
 		case <-statsTicker:
